@@ -1,0 +1,630 @@
+---
+title: "Figure 2: cis regulatory modules of Ewing Sarcoma"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+rm(list=ls())
+#Load neccessary packages
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(reticulate)
+  library(clusterProfiler)
+  library(enrichplot)
+  library(openxlsx)  
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  library(pals)
+  library(rhdf5)
+  library(pals)
+  library(Signac)
+  library(Seurat)
+  library(future)
+  library(ggrepel)
+  library(GenomicRanges)
+  library(RColorBrewer)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(parallel)
+  library(scCustomize)
+  library(org.Hs.eg.db)
+  library(SeuratObject)
+  library(msigdbr)
+  library(stringr)
+  library(tibble)
+  library(FigR)
+  library(pbmcapply)
+  library(fgsea)
+  library(viridis)
+
+})
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "MACS2/2.2.6-foss-2019b-Python-3.7.4")
+
+#make cairo functional
+knitr::opts_chunk$set(dev="CairoPNG")
+
+#load objects and set seed
+set.seed(1234)
+cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/092921_cite.rds")
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+library(RcppArrayFire)
+library(viewmaster)
+```
+
+#load colors
+```{r colors }
+cell_line_cols<-c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500")
+subgroup_cols<-c("group.1"= "#2D2D7C","group.2" = "#F3714C","group.3"= "#4488C8")
+
+cluster_cols<-c( "C1" = "#2d3aad",
+                 "C2" = "#01031f",
+                 "C3" = "#D51F26",
+                 "C4" = "#d64b50",
+                 "C5" = "#78181b",
+                 "C6" = "#8ed1f5",
+                 "C7" = "#739cff",
+                 "C8" = "#5e5cab",
+                 "C9" = "#abbeed",
+                 "C10" = "#8A9FD1",
+                 "C11" = "#e9c2db",
+                 "C12" = "#d17bb2",
+                 "C13" = "#FEE500",
+                 "C14" = "#bfb341",
+                 "C15" = "#ded8a4",
+                 "C16" = "#00bca8",
+                 "C17" = "#10665d",
+                 "C18" = "#77a39f",
+                 "C19" = "#8a3c07",
+                 "C20" = "#eb9d67",
+                 "C21" = "#F47D2B",
+                 "C22" = "#89288F",
+                 "C23" = "#b452ba",
+                 "C24" = "#208a42",
+                 "C25" = "#06541f")
+
+rna_cols<-paletteContinuous(n=8)[c(1:3, 6:8)]
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+mtf_cols<-pal
+```
+
+#load objects
+```{r}
+set.seed(1234)
+
+setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl") 
+m2<-loadArchRProject()
+m2_seu<-readRDS("m2.rds")
+```
+
+#Get peak to gene links, Fig 2A
+```{r get peak2gene links}
+m2<-addPeak2GeneLinks(m2, useMatrix = "GeneExpressionMatrix", reducedDims = "mo")
+#deafult parameters
+p <- plotPeak2GeneHeatmap(ArchRProj = m2, groupBy = "cell_line",k = 9,returnMatrices = F, palRNA = paletteContinuous(),palATAC = paletteContinuous("blueYellow"), palGroup = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))
+
+plotPDF(p, name = "link_heatmap_25.pdf", ArchRProj = m2, addDOC = FALSE, width = 8, height = 10)
+
+p <- plotPeak2GeneHeatmap(ArchRProj = m2, groupBy = "cell_line", k = 3, returnMatrices = T, palRNA = paletteContinuous(),palATAC = paletteContinuous("blueYellow"), palGroup = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))
+
+plotPDF(p, name = "link_heatmap.pdf", ArchRProj = m2, addDOC = FALSE, width = 8, height = 10)
+
+link_df<- data.frame(p@listData$Peak2GeneLinks)
+
+names(p@listData$RNA@listData$kmeansId)<- rownames(p@listData[["RNA"]]@listData[["matrix"]])
+
+link_df$kmean <- p@listData$RNA@listData$kmeansId[match(names(p@listData$RNA@listData$kmeansId), rownames(link_df))]
+names(link_df)
+
+write.csv(link_df, file.path("~/m2", "3_subgroup_links.csv"))
+
+link_df<-link_df[!duplicated(link_df$gene),]
+```
+
+#DIMPLOT, Fig 2A
+```{r}
+p<-plotEmbedding(m2, name = "cell_line", embedding = "mo_UMAP", size = 0.5, labelAsFactors=T, labelMeans=F, pal  = cell_line_cols)
+
+plotPDF(p, name = "mo_UMAP.pdf", ArchRProj = m2, addDOC = FALSE, width = 8, height = 10)
+
+p<-plotEmbedding(m2, name = "Clusters", embedding = "mo_UMAP", size = 0.5, pal = cluster_cols)
+plotPDF(p, name = "mo_UMAP_clusters.pdf", ArchRProj = m2, addDOC = FALSE, width = 8, height = 10)
+
+cds<-seurat_to_monocle3(seu, assay_name = "GeneExpressionMatrix", seu_rd = "mo_UMAP")
+
+pdf("~/m2/Plots/subgroup_umap.pdf", width = 5, height = 4)
+plot_cells(cds, color_cells_by = "subgroup", label_cell_groups = F)+scale_color_manual(values = subgroup_cols)&NoAxes()
+dev.off()
+```
+
+#Motif enrichment linked peaks with HOMER, Fig 2B
+```{r prepare peaks as beds for homer}
+link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$peak),]
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",]
+k3<- link_df[link_df$kmean == "3",]
+##FIMO GGAA counting Prep
+peaks<- StringToGRanges(k2$peak, sep = c(":", "-", "-"))
+values(peaks)<- DataFrame(name = k2$peak)
+peaks
+
+# Column1: chromosome
+# Column2: starting position
+# Column3: ending position
+# Column4: Unique Peak ID
+# Column5: not used
+# Column6: Strand (+/- or 0/1, where 0="+", 1="-")
+
+df <- data.frame(seqnames=seqnames(peaks),
+  starts=start(peaks)-1,
+  ends=end(peaks),
+  names=values(peaks),
+  scores=c(rep(".", length(peaks))),
+  strands="+")
+
+write.table(df, file="~/m2/k2_peaks.bed", quote=F, sep="\t", row.names=F, col.names=F)
+
+known_homer<-read.delim("~/m2/res/k3_homer/knownResults.txt")
+```
+
+```{bash configure homer}
+#now that it's downlaoded, when you use it again this is how do configure
+cd ~/dev/homer
+perl configureHomer.pl -make
+PATH=$PATH:/home/owaltner/dev/homer/.//bin/
+cd bin
+```
+
+```{bash}
+findMotifsGenome.pl ~/m2/k1_peaks.bed hg38 ~/m2/res -size 500 -p 12
+findMotifsGenome.pl ~/m2/k2_peaks.bed hg38 ~/m2/res -size 500 -p 12
+findMotifsGenome.pl ~/m2/k3_peaks.bed hg38 ~/m2/res -size 500 -p 12
+```
+
+```{r homer results}
+k1_homer<-read.delim("~/m2/res/k1_homer/knownResults.txt")
+#k1 jun, fosl2, fra1, atf3, ap1
+
+k2_homer<-read.delim("~/m2/res/k2_homer/knownResults.txt")
+#k2 fra1, fosl2, tead4, batf, jun, ap1
+
+k3_homer<-read.delim("~/m2/res/k3_homer/knownResults.txt")
+#k3 fli1, erg gabpa, elk4, 
+```
+
+```{r get unique non fusion motifs per result}
+k1_filt<- k1_homer %>% slice_min(P.value, n = 50) 
+k2_filt<- k2_homer %>% slice_min(P.value, n = 50) 
+k3_filt<- k3_homer %>% slice_min(P.value, n = 50) 
+
+k1_unique<-k1_filt[which(!k1_filt$Motif.Name %in% c(k2_filt$Motif.Name, k3_filt$Motif.Name)),]
+k2_unique<-k2_filt[which(!k2_filt$Motif.Name %in% c(k1_filt$Motif.Name, k3_filt$Motif.Name)),]
+k3_unique<-k2_filt[which(!k3_filt$Motif.Name %in% c(k1_filt$Motif.Name, k2_filt$Motif.Name)),]
+
+overlap<-intersect(k1_filt$Motif.Name, y= c(k2_filt$Motif.Name, k3_filt$Motif.Name))
+```
+
+```{bash kmean peaks, motif enrichment of top hits (from results)}
+annotatePeaks.pl ~/m2/k1_peaks.bed hg38 -size 500 -hist 1 -m ~/m2/res/motifs/*.motif > ~/m2/res/motif_enrich/motif_k1.txt
+annotatePeaks.pl ~/m2/k2_peaks.bed hg38 -size 500 -hist 1 -m ~/m2/res/motifs/*.motif > ~/m2/res/motif_enrich/motif_k2.txt
+annotatePeaks.pl ~/m2/k3_peaks.bed hg38 -size 500 -hist 1 -m ~/m2/res/motifs/*.motif > ~/m2/res/motif_enrich/motif_k3.txt
+```
+
+```{r make homer row means data frame}
+kmeans<-c("k1", "k2", "k3")
+
+mtf_list<-lapply(kmeans, function(i){
+  
+  mtf<-read.delim(paste0("~/m2/res/motif_enrich/motif_",i, ".txt"))
+  avg_mtf<-lapply(seq(from=2,to=length(names(mtf))-4,by=3), function(x){
+    df<-data.frame(distance =  mtf[,1], mtf = rowMeans( mtf[,x:(x+2)]), motif =  str_split(names(mtf)[x], "\\.\\.") %>%  sapply("[[", 1))
+    df
+  })
+  
+  df<-do.call(rbind, avg_mtf)
+  df$kmean <- i
+  df
+})
+
+mtf_df<-do.call(rbind, mtf_list)
+
+table(mtf_df$motif) %>% names()
+```
+
+```{r visualize by TF family}
+mtf_df<-mtf_df[mtf_df$motif %in% c( "Klf4.Zf", "KLF5.Zf", "Maz.Zf", "Sp1.Zf", "TEAD1.TEAD", "TEAD.TEA", "TEAD4.TEA", "Hoxd13.Homeobox", "Hoxa9.Homeobox", "Hoxc9.Homeobox","Fos.bZIP", "Fosl2.bZIP","Jun.AP1.bZIP", "AP.1.bZIP", "EWS.ERG.fusion.ETS", "EWS.FLI1.fusion.ETS", "Fli1.ETS" ),]
+mtf_df$family<-NA
+mtf_df$family[mtf_df$motif %in% c("Klf4.Zf", "KLF5.Zf", "Maz.Zf", "Sp1.Zf") ]<-"ZF"
+mtf_df$family[mtf_df$motif %in% c("TEAD1.TEAD", "TEAD.TEA", "TEAD4.TEA") ]<-"TEAD"
+mtf_df$family[mtf_df$motif %in% c("Hoxd13.Homeobox", "Hoxa9.Homeobox", "Hoxc9.Homeobox") ]<-"HOMEOBOX"
+mtf_df$family[mtf_df$motif %in% c("Fos.bZIP", "Fosl2.bZIP","Jun.AP1.bZIP", "AP.1.bZIP" ) ]<-"AP-1"
+mtf_df$family[mtf_df$motif %in% c("EWS.ERG.fusion.ETS", "EWS.FLI1.fusion.ETS", "Fli1.ETS" ) ]<-"EWS/ETS"
+
+mtf_df$motif<-factor(mtf_df$motif, levels = c("Fos.bZIP", "Fosl2.bZIP","Jun.AP1.bZIP", "AP.1.bZIP" ,"Hoxd13.Homeobox", "Hoxa9.Homeobox", "Hoxc9.Homeobox","TEAD1.TEAD", "TEAD.TEA", "TEAD4.TEA","Klf4.Zf", "KLF5.Zf", "Maz.Zf", "Sp1.Zf", "EWS.ERG.fusion.ETS", "EWS.FLI1.fusion.ETS", "Fli1.ETS"))
+mtf_df$family<-factor(mtf_df$family, levels = c("AP-1", "HOMEOBOX", "TEAD", "ZF", "EWS/ETS"))
+
+# ggplot(mtf_df, aes(x = distance, y = mtf, color = motif))+geom_smooth()+theme_classic()+facet_wrap(~kmean+family, ncol = 5)+scale_color_manual(values = c(sfc(n=14), brewer.greys(n=3)))
+
+tf_cols<-c(sfc(n=14), brewer.greys(n=3))
+names(tf_cols)<-levels(factor(mtf_df$motif))
+
+gg_list<-lapply(levels(factor(mtf_df$family)), function(x){
+  g<-ggplot(mtf_df[mtf_df$family == x,], aes(x = distance, y = mean, color = family))+geom_smooth()+theme_classic()+facet_wrap(~kmean, ncol = 1)
+  g
+})
+```
+
+```{r mean tf family}
+x<-"AP-1"
+i<-"k1"
+y="0"
+mean_fam<-lapply(levels(factor(mtf_df$family)), function(x){
+  
+  sub<-mtf_df[mtf_df$family == x,]
+  mean_per_kmean<-lapply(levels(factor(sub$kmean)), function(i){
+    
+    k<-sub[sub$kmean == i,]
+    means_per_distance<-sapply(levels(factor(k$distance)), function(y){
+      k[k$distance == y,]$mtf %>% mean()
+    })
+    
+    df<-data.frame(mean = means_per_distance ,distance = names(means_per_distance), kmean = i)
+    df
+  })
+  df<-do.call(rbind, mean_per_kmean)
+  df$family<-x
+  df
+})
+
+df<-do.call(rbind, mean_fam)
+# table(df$family)
+# names(df)
+# ggplot(df[df$family == "AP-1",], aes(x = distance, y = mean))+geom_point()+facet_wrap(~kmean, ncol = 1)
+
+df$distance<-df$distance %>% as.numeric()
+
+pdf("~/m2/Plots/AP-1_kmean_enrich.pdf", width =3, height =4)
+gg_list[[1]]
+dev.off()
+
+pdf("~/m2/Plots/EWS_ETS_kmean_enrich.pdf", width =3, height =4)
+gg_list[[2]]
+dev.off()
+
+pdf("~/m2/Plots/HOMEOBOX_kmean_enrich.pdf", width =3, height =4)
+gg_list[[3]]
+dev.off()
+
+pdf("~/m2/Plots/TEAD_kmean_enrich.pdf", width =3, height =4)
+gg_list[[4]]
+dev.off()
+
+pdf("~/m2/Plots/ZF_kmean_enrich.pdf", width =3, height =4)
+gg_list[[5]]
+dev.off()
+```
+
+#ID corr TFS, Fig 2C
+```{r Correlate MM exp wide}
+seGroupMotif <- getGroupSE(ArchRProj = m2, useMatrix = "MotifMatrix", groupBy = "cell_line")
+seZ <- seGroupMotif[rowData(seGroupMotif)$seqnames=="z",]
+
+rowData(seZ)$maxDelta <- lapply(seq_len(ncol(seZ)), function(x){
+  rowMaxs(assay(seZ) - assay(seZ)[,x])
+}) %>% Reduce("cbind", .) %>% rowMaxs
+
+corGSM_MM <- correlateMatrices(
+  ArchRProj = m2,
+  useMatrix1 = "GeneExpressionMatrix",
+  useMatrix2 = "MotifMatrix",
+  reducedDims = "mo"
+)
+  
+corGSM_MM$maxDelta <- rowData(seZ)[match(corGSM_MM$MotifMatrix_name, rowData(seZ)$name), "maxDelta"]
+
+corGSM_MM <- corGSM_MM[order(abs(corGSM_MM$cor), decreasing = TRUE), ]
+corGSM_MM <- corGSM_MM[which(!duplicated(gsub("\\-.*","",corGSM_MM[,"MotifMatrix_name"]))), ]
+corGSM_MM$TFRegulator <- "NO"
+corGSM_MM$TFRegulator[which(corGSM_MM$cor > 0.5 & corGSM_MM$padj < 0.05 & corGSM_MM$maxDelta > quantile(corGSM_MM$maxDelta, 0.75))] <- "YES"
+sort(corGSM_MM[corGSM_MM$TFRegulator=="YES",1])
+
+df<-data.frame(corGSM_MM)
+
+write.csv(df, file.path("res/tf_motif_expression_correlation_exp_wide.csv"))
+
+df<-read.csv(file.path("res/tf_motif_expression_correlation_exp_wide.csv"))
+
+p <- ggplot(df, aes(cor, maxDelta, fill = TFRegulator)) +
+  theme_ArchR() +
+  geom_hline(yintercept = 1.898515 , lty = "dashed", alpha("red", 0.5)) + 
+  geom_vline(xintercept = 0.5, lty = "dashed", color = alpha("red", 0.5)) + 
+  geom_point(shape = 21, color = "black", aes(size = -log10(pval) )) + 
+  scale_fill_manual(values = c("NO"="darkgrey", "YES"="firebrick3")) +
+  xlab("Correlation To Gene Score") +
+  ylab("Max TF Motif Delta") +
+  scale_y_continuous(
+    expand = c(0,0), 
+    limits = c(0, max(df$maxDelta)*1.05)
+  )+
+  geom_label_repel(data = df[df$TFRegulator == "YES",],label = as.character(df[df$TFRegulator == "YES",]$GeneExpressionMatrix_matchName),
+                   point.padding =0,
+                   force_pull  = 20,
+                   segment.color = 'black',
+                   colour = "black", fill = "white", max.overlaps = Inf, size = 4, min.segment.length =0)+
+  xlim(c(0, 1.2))+ylim(0,11)
+
+
+p+theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         panel.grid.major = element_blank(),
+         panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent')
+       )
+
+```
+
+#subgroup specificity of corr TFs, Fig 2D-E
+```{r subgroup specificity chromvAR}
+corr<-read.csv("~/m2/res/tf_motif_expression_correlation_exp_wide.csv")
+
+mtf_mat<-getMatrixFromProject(m2, useMatrix = "MotifMatrix")
+mtf_seu<-CreateSeuratObject(counts = mtf_mat@assays@data$deviations, assay = "chromVAR", meta.data=data.frame(mtf_mat@colData), project = "mtf_cellLine")
+
+chrom_cell_line_avg<-AverageExpression(mtf_seu, assay ="chromVAR", group.by = "subgroup")
+chrom_mat <- chrom_cell_line_avg[[1]][corr[corr$TFRegulator=="YES",]$MotifMatrix_name,] %>% as.matrix()
+chrom_mat<- t(scale(t(chrom_mat)))
+library(viridis)
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+quantile(chrom_mat, c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9))
+col_fun = circlize::colorRamp2(quantile(chrom_mat, c( 0.1, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,0.9, 0.99)), pal)
+
+pdf("Plots/chromvar_tfs_ht_subgroup.pdf", width = 3, height = 5)
+h1<-Heatmap(t(chrom_mat), name = "chromVAR",  col =col_fun, row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 10), column_names_rot = 45, cluster_columns =T,cluster_rows = T, show_column_dend = F, show_row_dend = T, column_names_side = "top", row_names_side = "left", height = 800, row_dend_side = "left")
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r chromvar single cell}
+mtf_seu<-CreateSeuratObject(counts = mtf_mat@assays@data$deviations, assay = "chromVAR", meta.data=data.frame(mtf_mat@colData), project = "mtf_cellLine")
+
+chrom_mat <- mtf_seu@assays$chromVAR@counts[corr[corr$TFRegulator=="YES",]$MotifMatrix_name,] %>% as.matrix()
+chrom_mat<- t(scale(t(chrom_mat)))
+library(viridis)
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+quantile(chrom_mat, c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9))
+col_fun = circlize::colorRamp2(quantile(chrom_mat, c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)), pal)
+
+col_split<-factor(mtf_seu$cell_line)
+
+pdf("Plots/chromvar_tfs_ht_cell_line_sc.pdf", width = 5, height = 4)
+
+h2<-Heatmap(t(chrom_mat), name = "chromVAR1",  col =col_fun, row_names_gp = gpar(fontsize = 8), column_names_gp = gpar(fontsize = 8), column_names_rot = 10, cluster_columns =T, cluster_rows = T, show_column_dend = F, show_row_dend = F, column_names_side = "top", row_split = col_split, show_column_names = T, cluster_row_slices = T, clustering_distance_columns = "pearson", clustering_distance_rows = "pearson", use_raster = T, show_row_names = F, height = 7000,raster_quality = 8)
+
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r}
+draw(h1 %v% h2)
+```
+
+```{r subgroup tf rna heatmap}
+exp_cell_line_avg<-AverageExpression(seu, assay ="GeneExpressionMatrix", group.by = "subgroup", return.seurat = T)
+act_mat <- exp_cell_line_avg@assays$GeneExpressionMatrix@data[which(rownames(exp_cell_line_avg) %in% corr[corr$TFRegulator=="YES",]$MotifMatrix_name),] %>% as.matrix()
+act_mat<-act_mat[rowSums(act_mat) > 0,]
+act_mat<- t(scale(t(act_mat)))
+
+quantile(act_mat, c(0.01, 0.25, 0.75, 0.95))
+
+Heatmap(act_mat,name = "TF_expression",  col  =rna_cols, row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 16),row_names_rot = -20, column_names_rot = -90, cluster_columns = T,width = 100, cluster_rows = T, show_column_dend = T, show_row_dend = F)
+```
+
+
+
+
+
+#kmean violins, Supplementary Fig 2A-B
+```{r plot kmean expression scores}
+#kmeans gene set analysis with seurat
+setwd("~/m2")
+#kmeans genes filtered by unique genes per group
+link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$gene),]
+
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",] 
+k3<- link_df[link_df$kmean == "3",] 
+
+seu<-AddModuleScore(seu, features = list(k2$gene), name = "K2")
+seu<-AddModuleScore(seu, features = list(k1$gene), name = "K1")
+seu<-AddModuleScore(seu, features = list(k3$gene), name = "K3")
+
+seu$cell_line <- factor(seu$cell_line, levels = c("A673" , "CHLA9", "CHLA10", "TC32" , "PDX305", "SKNMC", "A4573", "TC71" ,"RDES"))
+```
+
+```{r plot kmean expression scores}
+pdf("~/m2/Plots/k2_exp_vln.pdf", width = 6, height = 4)
+VlnPlot(m2_seu, features = "K21",  pt.size = 0, group.by = "cell_line")+scale_fill_manual(values = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))&NoLegend()
+dev.off()
+
+pdf("~/m2/Plots/k1_exp_vln.pdf", width = 6, height = 4)
+VlnPlot(m2_seu, features = "K11",  pt.size = 0, group.by = "cell_line")+scale_fill_manual(values = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))&NoLegend()
+dev.off()
+
+
+pdf("~/m2/Plots/k3_exp_vln.pdf", width = 6, height = 4)
+VlnPlot(m2_seu, features = "K31",  pt.size = 0, group.by = "cell_line")+scale_fill_manual(values = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))&NoLegend()
+dev.off()
+```
+
+```{r plot kmean peak accessibility scores}
+peak_seu<-archR_to_seurat(m2, matrix = "PeakMatrix", binarize =F, archr_rd = "mo_UMAP")
+peak_seu <- RunTFIDF(peak_seu)
+peak_seu <- FindTopFeatures(peak_seu, min.cutoff = 'q0')
+peak_seu <- RunSVD(peak_seu)
+peak_seu$cell_line<-factor(peak_seu$cell_line, levels = c("A673", "CHLA9", "CHLA10", "TC32", "PDX305", "SKNMC", "A4573", "TC71", "RDES"))
+
+link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$peak),]
+link_df<-link_df[!duplicated(link_df$gene),]
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",]
+k3<- link_df[link_df$kmean == "3",]
+
+kmean_list<-lapply(list(k1, k2, k3), function(x){
+  peaks<-gsub(":", "-", x$peak)
+  gr<- StringToGRanges(peaks)
+  ov<-subsetByOverlaps(StringToGRanges(rownames(peak_seu)), gr)
+  paste0(ov@seqnames, "-", ov@ranges)
+})
+names(kmean_list)<-c("k1", "k2", "k3")
+
+peak_seu<-AddModuleScore(peak_seu, features = kmean_list, name = "peaks")
+
+VlnPlot(peak_seu, features = "peaks1", pt.size = 0, group.by = "cell_line")+scale_fill_manual(values = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))&NoLegend()
+VlnPlot(peak_seu, features = "peaks2", pt.size = 0, group.by = "cell_line")+scale_fill_manual(values = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))&NoLegend()
+VlnPlot(peak_seu, features = "peaks3", pt.size = 0, group.by = "cell_line")+scale_fill_manual(values = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))&NoLegend()
+
+```
+
+
+#Gene set enrichment of kmean gene sets, Fig S2B
+```{r GENE SET ENRICHMENT WITH ENRICHER}
+link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$gene),]
+markers<-readRDS("~/m2/res/clusters_markers_se.rds")
+
+link_df<- link_df%>%
+    dplyr::filter(!str_detect(gene ,"^RPL")) %>%
+    dplyr::filter(!str_detect(gene, "^RPS"))%>%
+    dplyr::filter(!str_detect(gene, "^MT-"))
+
+# Compile a list of gene sets to test for enrichment
+# Initialize a results table
+results <- data.frame(cluster_id = character(),
+                      geneID = character(),
+                      p_value = numeric(),
+                      ID = character(),
+                      Description = character(),
+                      BgRatio = character(),
+                      p.adjust = numeric(),
+                      Count = numeric(),
+                      qvalue = numeric(),
+                      stringsAsFactors = FALSE)
+# Loop through each cluster and gene set, and perform enrichment analysis
+##change function from GO:BP or H respectively
+enrich_kmean<-function(cluster_id){
+  cluster_id <- cluster_id
+  k<-link_df[link_df$kmean == cluster_id,]
+  k<-k %>% slice_max(Correlation, n =300)
+  genes<-k$gene
+  
+  #changed category to make either GOBP & hallmark plots
+  m_t2g <- msigdbr(species = "Homo sapiens", subcategory = "CGP") %>% 
+  dplyr::select(gs_name, gene_symbol) 
+  
+  m_t2g<-m_t2g[grep("EWSR1|EWING",m_t2g$gs_name),]
+  
+  
+  result <- enricher(gene =genes,
+                     TERM2GENE = m_t2g,
+                     pvalueCutoff = 0.05,
+                     universe = markers@elementMetadata$name,
+                     qvalueCutoff = 0.05,
+                     pAdjustMethod = "BH")
+  if (length(result@result) > 0) {
+    results <- result@result
+    results$cluster_id<-cluster_id
+    return(results)
+  }else{
+    return(NULL)
+  }
+  
+}
+
+# Use lapply to perform enrichment analysis for all cluster-gene set combinations
+h_results_list <- lapply(levels(factor(link_df$kmean)),function(i){
+  enrich_kmean(i)})
+
+gobp_results_list<-lapply(levels(factor(link_df$kmean)),function(i){
+  enrich_kmean(i)})
+
+ews_results_list<-lapply(levels(factor(link_df$kmean)),function(i){
+  enrich_kmean(i)})
+```
+
+```{r visualize}
+# Flatten the results list and remove NULL elements
+results <- do.call(rbind, ews_results_list)
+
+top_terms<-lapply(levels(factor(results$cluster_id)), function(x){
+  
+  top_gse_sub<-results  %>% dplyr::filter(cluster_id == x & pvalue < 0.05) 
+  top_gse_filt<-top_gse_sub %>% slice_max(Count, n =7)
+  top_gse_filt$Description
+  
+})
+
+top_terms<-top_terms %>% unlist() %>% unique()
+
+results_sub<-results[results$Description %in% top_terms,]
+results_sub<-results_sub[results_sub$pvalue< 0.05,]
+
+results_sub<-results_sub %>% group_by(cluster_id)
+results_sub$Description<-factor(results_sub$Description, levels =rev(unique(results_sub$Description)))
+results_sub$cluster_id<-factor(results_sub$cluster_id, levels =unique(results_sub$cluster_id))
+
+ggplot(results_sub, aes(x = Description, y = cluster_id, size = Count, fill = pvalue))+
+geom_point(shape = 21, color="black")+
+theme_ArchR()+
+RotatedAxis()+
+coord_flip()+
+scale_fill_gradientn(colors = paletteContinuous(set = "whiteBlue", reverse = T))
+```
+
+
+#CELL CYCLE EXPRESSION,  Supplementary Fig. 2C-D
+```{r}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+DefaultAssay(m2_seu)<-"GeneExpressionMatrix"
+m2_seu <- CellCycleScoring(m2_seu, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+names(m2_seu@meta.data)
+
+m2_seu$Clusters<-factor(m2_seu$Clusters, levels= paste0("C", 1:25))
+
+cc_clsuters<-table(m2_seu$Phase, m2_seu$Clusters) %>% as.data.frame()
+
+ggplot(cc_clsuters, aes(fill =Var1, y=Freq, x=Var2))+ 
+    geom_bar(stat = "identity",position = "fill")+
+    scale_fill_manual(values = brewer.pal("Set2", n =3))+
+    theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+FeaturePlot_scCustom(seu, features = "MKI67", colors_use = rna_cols, max.cutoff = "q99")&NoAxes()
+```
+
+
