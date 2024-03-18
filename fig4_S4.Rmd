@@ -1,0 +1,468 @@
+---
+title: "Knockdown figure - 4"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+rm(list=ls()) 
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(reticulate)
+  library(openxlsx)  
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  # library(pals)
+  library(rhdf5)
+  library(RColorBrewer)
+  library(Signac)
+  library(Seurat)
+  library(future)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  #library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(parallel)
+  library(scCustomize)
+  library(pbmcapply)
+  library(msigdbr)
+  library(SeuratObject)
+  library(tibble)
+  library(ggrepel)
+  library(Rcpp)
+})
+
+set.seed(1234)
+
+setwd("~/m3")
+
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+
+library(RcppArrayFire)
+library(viewmaster)
+```
+
+#load objects
+```{r}
+m3<-loadArchRProject()
+m3_seu<-readRDS("m3.rds")
+
+
+setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
+m1<- loadArchRProject("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
+m1_seu<-readRDS("all_parents_seurat.rds")
+
+```
+
+#load colors
+```{r}
+kd_cols<-c("A673_shNS"="#272E6A","A673_shFLI1"="#5362e6","CHLA10_shNS"="#89288F", "CHLA10_shFLI1" = "#ea42f5", "PDX305_shNS"="#F47D2B", "PDX305_shFLI1" = "#fcc59f", "TC71_shNS"="#c49bb8", "TC71_shFLI1"= "#fac5eb")
+
+all_parents_cols<-c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB")
+
+cell_line_cols<-c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500")
+subgroup_cols<-c("group.1"= "#9d8cbf","group.2" = "#12733c","group.3"= "#edd30c")
+
+cluster_cols<-c( "C1" = "#2d3aad",
+                 "C2" = "#01031f",
+                 "C3" = "#D51F26",
+                 "C4" = "#d64b50",
+                 "C5" = "#78181b",
+                 "C6" = "#8ed1f5",
+                 "C7" = "#739cff",
+                 "C8" = "#5e5cab",
+                 "C9" = "#abbeed",
+                 "C10" = "#8A9FD1",
+                 "C11" = "#e9c2db",
+                 "C12" = "#d17bb2",
+                 "C13" = "#FEE500",
+                 "C14" = "#bfb341",
+                 "C15" = "#ded8a4",
+                 "C16" = "#00bca8",
+                 "C17" = "#10665d",
+                 "C18" = "#77a39f",
+                 "C19" = "#8a3c07",
+                 "C20" = "#eb9d67",
+                 "C21" = "#F47D2B",
+                 "C22" = "#89288F",
+                 "C23" = "#b452ba",
+                 "C24" = "#208a42",
+                 "C25" = "#06541f")
+
+rna_cols<-paletteContinuous(n=8)[c(1:3, 6:8)]
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+mtf_cols<-pal
+
+atac_cols <- paletteContinuous(set = "blueYellow",n = 10)
+```
+
+#GGAA microsatelitie EWS:FLI binding sites chromvar Fig 4A
+```{r}
+msat_regs<-read.table("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/ggaa.bed", header = F)
+non_msat_regs<-read.table("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/non_ggaa.bed")
+
+names(msat_regs)<-c("chr", "start", "end", "score", "strand")
+names(non_msat_regs)<-c("chr", "start", "end", "score", "strand")
+
+msat_gr<-makeGRangesFromDataFrame(msat_regs)
+non_msat_gr<-makeGRangesFromDataFrame(non_msat_regs)
+  
+m1<-addPeakAnnotations(ArchRProj = m1, regions = list("msat"=msat_gr,"non_msat"=non_msat_gr), name = "msat_EWS:FLI_binding_site", force =T)
+m1 <- addDeviationsMatrix(
+  ArchRProj = m1, 
+  peakAnnotation = "msat_EWS:FLI_binding_site",
+  force = TRUE
+)
+getAvailableMatrices(m1)
+
+markerChIP <- getFeatures(m1, useMatrix = "msat_EWS:FLI_binding_siteMatrix")
+markerChIP <- sort(grep("z:", markerChIP, value = TRUE))
+markerChIP
+
+p <- plotEmbedding(
+    ArchRProj = m1, 
+    colorBy = "msat_EWS:FLI_binding_siteMatrix", 
+    name = markerChIP, 
+    embedding = "mo_UMAP"
+)
+
+msat_bind_mat<-getMatrixFromProject(m1, useMatrix = "msat_EWS:FLI_binding_siteMatrix")
+
+msat_bind_mat<-assays(msat_bind_mat)$deviations
+
+t<-t(msat_bind_mat)
+
+t
+
+m1_seu@meta.data$msat_EWS_FLI_binding<-t[,1]
+m1_seu@meta.data$non_msat_EWS_FLI_binding<-t[,2]
+
+dim(msat_bind_mat)
+dim(m1_seu)
+
+FeaturePlot_scCustom(m1_seu, features = c("msat_EWS_FLI_binding", "non_msat_EWS_FLI_binding"), order = T, colors_use = mtf_cols[c(-1, -9)], pt.size = 0.7, max.cutoff = "q99")&NoAxes()
+```
+
+
+#enrichment of fusion binding sites Fig 4B
+```{r load fli binding sites from orth paper}
+fli<-read.csv("~/m2/fli_bind.csv")
+fli<-fli[2:length(fli$X),]
+names(fli)<-fli[1,]
+fli<-fli[-1,]
+names(fli)[1:3]<-tolower(names(fli)[1:3])
+
+names(fli)
+
+ggaa_fli<-fli[!is.na(fli$`Overlapping_GGAA-mSat`), ]
+non_fli<-fli[is.na(fli$`Overlapping_GGAA-mSat`), ]
+fli_list<-list(ggaa_fli, non_fli)
+names(fli_list)<-c("ggaa", "non_ggaa")
+
+#split by msat overlap or not, lift over, write bed
+lapply(1:2, function(x){
+  gr<-fli_list[[x]] %>% makeGRangesFromDataFrame()
+
+  ch = rtracklayer::import.chain("~/m2/hg19ToHg38.over.chain")
+
+  gr_list<-liftOver(gr, ch)
+  gr_hg38<-unlist(as(gr_list, "GRangesList"))
+  
+  df <- data.frame(seqnames=seqnames(gr_hg38),
+                   starts=start(gr_hg38)-1,
+                   ends=end(gr_hg38),
+                   names=values(gr_hg38),
+                   scores=c(rep(".", length(gr_hg38))),
+                   strands="+")
+  
+  write.table(df, file=paste0("~/m2/res/", names(fli_list)[x], ".bed"), quote=F, sep="\t", row.names=F, col.names=F)
+})
+```
+
+```{bash run homer with msat fli beds}
+annotatePeaks.pl ~/m2/k1_peaks.bed hg38 -size 200 -hist 200 -p ~/m2/res/ggaa.bed ~/m2/res/non_ggaa.bed > ~/m2/res/fli_ggaa_k1.txt
+annotatePeaks.pl ~/m2/k2_peaks.bed hg38 -size 200 -hist 200 -p ~/m2/res/ggaa.bed ~/m2/res/non_ggaa.bed > ~/m2/res/fli_ggaa_k2.txt
+annotatePeaks.pl ~/m2/k3_peaks.bed hg38 -size 200 -hist 200 -p ~/m2/res/ggaa.bed ~/m2/res/non_ggaa.bed > ~/m2/res/fli_ggaa_k3.txt
+```
+
+```{r all fli binding sites}
+kmeans<-c("k1", "k2", "k3")
+x<-"k1"
+fli_list<-lapply(kmeans, function(x){
+  fli<-read.delim(paste0("~/m2/res/fli_ggaa_",x, ".txt"), sep = "\t")
+  names(fli)[1:3]<-c("distance","msat", "no_msat")
+  
+  fli_df<-lapply(names(fli)[2:3], function(x){
+    df<-data.frame(distance =  fli[,1], enrich = fli[,x], msat =  x)
+    df
+  })
+  
+  df<-do.call(rbind, fli_df)
+  df$kmean <- x
+  df
+})
+
+fli_df<-do.call(rbind, fli_list)
+pdf("~/m2/Plots/ggaa_fli_bind.pdf", width = 8, height = 3)
+ggplot(fli_df, aes(x = distance, y = enrich, color = msat))+geom_smooth()+theme_classic()+ggtitle(label = "Fli1 Binding Site Enrichment")+facet_wrap(~kmean, ncol =1)+scale_color_manual(values = c("firebrick", "cornflowerblue"))
+dev.off()
+```
+
+#Dimplot Fig 4C
+```{r Dim Plot}
+m3_cds<-seurat_to_monocle3(m3_seu, seu_rd = "mo_UMAP")
+
+m3_cds$cond[grepl("shFLI", m3_cds$cell_line)]<-"shFLI"
+m3_cds$cond[!grepl("shFLI", m3_cds$cell_line)]<-"shNS"
+
+plot_cells(m3_cds, color_cells_by = "cell_line", label_cell_groups = F, cell_size = 0.5)+scale_color_manual(values = c("A673_shNS"="#272E6A","A673_shFLI1"="#5362e6","CHLA10_shNS"="#89288F", "CHLA10_shFLI1" = "#ea42f5", "PDX305_shNS"="#F47D2B", "PDX305_shFLI1" = "#fcc59f", "TC71_shNS"="#c49bb8", "TC71_shFLI1"= "#fac5eb"))&NoAxes()
+```
+
+#load data
+```{r}
+link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$gene),]
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",]
+k3<- link_df[link_df$kmean == "3",]
+corr<-read.csv("~/m2/res/tf_motif_expression_correlation_exp_wide.csv")
+```
+
+#fli perturbations Fig 4D-F
+```{r KMEAN / IC_EWS GEX}
+DefaultAssay(m3_seu)<-"GeneExpressionMatrix"
+
+m3_seu<-AddModuleScore(m3_seu, features = list(k2$gene), name = "K2")
+m3_seu<-AddModuleScore(m3_seu, features = list(k1$gene), name = "K1")
+m3_seu<-AddModuleScore(m3_seu, features = list(k3$gene), name = "K3")
+
+Idents(m3_seu)<-"cell_line"
+
+VlnPlot(m3_seu, features = "K11", pt.size=0,  split.by = "cond", group.by="cell", split.plot=T, fill.by ="ident")+scale_fill_manual(values = c("shNS"="white","shFLI"="gray90"))+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)
+
+VlnPlot(m3_seu, features = "K21", pt.size=0,  split.by = "cond", group.by="cell", split.plot=T, fill.by ="ident")+scale_fill_manual(values = c("shNS"="white","shFLI"="gray90"))+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)
+
+VlnPlot(m3_seu, features = "K31", pt.size=0,  split.by = "cond", group.by="cell", split.plot=T, fill.by ="ident")+scale_fill_manual(values = c("shNS"="white","shFLI"="gray90"))+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)
+```
+
+#reduce kmean gene list to ones changed by knockdown
+```{r}
+Idents(m3_seu)<-"cond"
+table(m3_seu$cond)
+
+DefaultAssay(m3_seu)<-"GeneExpressionMatrix"
+
+kd_markers<-FindMarkers(m3_seu, ident.2 = "shNS", ident.1 = "shFLI")
+
+m<-kd_markers[rownames(kd_markers) %in% link_df$gene,]
+m$kmean<-"k1"
+m$kmean[which(rownames(m) %in% link_df[link_df$kmean == "2",]$gene)]<-"k2"
+m$kmean[rownames(m) %in% link_df[link_df$kmean == "3",]$gene]<-"k3"
+table(m$kmean)
+
+k1_fli1<-m[which(m$avg_log2FC > 0.25 & m$kmean == "k1"),] %>% rownames()
+k2_fli1<-m[which(m$avg_log2FC > 0.25 & m$kmean == "k2"),] %>% rownames()
+k3_fli1<-m[which(m $avg_log2FC> 0.25 & m$kmean == "k3"),] %>% rownames()
+
+k1_ns<-m[which(m$avg_log2FC < -0.25 & m$kmean == "k1"),] %>% rownames()
+k2_ns<-m[which(m$avg_log2FC < -0.25 & m$kmean == "k2"),] %>% rownames()
+k3_ns<-m[which(m $avg_log2FC < -0.25 & m$kmean == "k3"),] %>% rownames()
+
+kmean_genes<-list(k2_fli1,k3_ns)
+
+
+k3_gene<-m[which(m$avg_log2FC < -0.25 & m$kmean == "k3" & m$cluster == "shFLI"),]$gene 
+k2_gene<-m[which(m$avg_log2FC > 0.25 & m$kmean == "k2" & m$cluster == "shFLI"),]$gene 
+
+saveRDS(kmean_genes, "~/m3/res/kd_kmean_genes.rds")
+```
+
+#Gene set enrichment of kmean gene sets, Fig S4A
+```{r GENE SET ENRICHMENT WITH ENRICHER}
+link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$gene),]
+markers<-readRDS("~/m2/res/clusters_markers_se.rds")
+
+link_df<- link_df%>%
+    dplyr::filter(!str_detect(gene ,"^RPL")) %>%
+    dplyr::filter(!str_detect(gene, "^RPS"))%>%
+    dplyr::filter(!str_detect(gene, "^MT-"))
+
+# Compile a list of gene sets to test for enrichment
+# Initialize a results table
+results <- data.frame(cluster_id = character(),
+                      geneID = character(),
+                      p_value = numeric(),
+                      ID = character(),
+                      Description = character(),
+                      BgRatio = character(),
+                      p.adjust = numeric(),
+                      Count = numeric(),
+                      qvalue = numeric(),
+                      stringsAsFactors = FALSE)
+# Loop through each cluster and gene set, and perform enrichment analysis
+##change function from GO:BP or H respectively
+enrich_kmean<-function(cluster_id){
+  cluster_id <- cluster_id
+  k<-link_df[link_df$kmean == cluster_id,]
+  k<-k %>% slice_max(Correlation, n =300)
+  genes<-k$gene
+  
+  #changed category to make either GOBP & hallmark plots
+  m_t2g <- msigdbr(species = "Homo sapiens", subcategory = "CGP") %>% 
+  dplyr::select(gs_name, gene_symbol) 
+  
+  m_t2g<-m_t2g[grep("EWSR1|EWING",m_t2g$gs_name),]
+  
+  
+  result <- enricher(gene =genes,
+                     TERM2GENE = m_t2g,
+                     pvalueCutoff = 0.05,
+                     universe = markers@elementMetadata$name,
+                     qvalueCutoff = 0.05,
+                     pAdjustMethod = "BH")
+  if (length(result@result) > 0) {
+    results <- result@result
+    results$cluster_id<-cluster_id
+    return(results)
+  }else{
+    return(NULL)
+  }
+  
+}
+
+# Use lapply to perform enrichment analysis for all cluster-gene set combinations
+ews_results_list<-lapply(levels(factor(link_df$kmean)),function(i){
+  enrich_kmean(i)})
+```
+
+```{r visualize}
+# Flatten the results list and remove NULL elements
+results <- do.call(rbind, ews_results_list)
+
+top_terms<-lapply(levels(factor(results$cluster_id)), function(x){
+  
+  top_gse_sub<-results  %>% dplyr::filter(cluster_id == x & pvalue < 0.05) 
+  top_gse_filt<-top_gse_sub %>% slice_max(Count, n =7)
+  top_gse_filt$Description
+  
+})
+
+top_terms<-top_terms %>% unlist() %>% unique()
+
+results_sub<-results[results$Description %in% top_terms,]
+results_sub<-results_sub[results_sub$pvalue< 0.05,]
+
+results_sub<-results_sub %>% group_by(cluster_id)
+results_sub$Description<-factor(results_sub$Description, levels =rev(unique(results_sub$Description)))
+results_sub$cluster_id<-factor(results_sub$cluster_id, levels =unique(results_sub$cluster_id))
+
+ggplot(results_sub, aes(x = Description, y = cluster_id, size = Count, fill = pvalue))+
+geom_point(shape = 21, color="black")+
+theme_ArchR()+
+RotatedAxis()+
+coord_flip()+
+scale_fill_gradientn(colors = paletteContinuous(set = "whiteBlue", reverse = T))
+```
+
+#Fig S4B
+```{r}
+VlnPlot(m1_seu, features = c("msat_EWS_FLI_binding", "non_msat_EWS_FLI_binding"), group.by = "cell_line", cols = all_parents_cols, pt.size = 0, same.y.lims = T, y.max = 3)
+```
+
+#Fig S4D
+```{r}
+m3_seu<-AddModuleScore(m3_seu, features = list(aynaud$Gene), name = "aynaud")
+aynaud<-read.delim("/fh/fast/furlan_s/user/owalt/ewings/gene_sets/ICEWS_genes.txt")
+
+VlnPlot(m3_seu, features = "aynaud1", pt.size=0,  split.by = "cond", group.by="cell", split.plot=T, fill.by ="ident")+scale_fill_manual(values = c("shNS"="white","shFLI"="gray90"))+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)
+```
+
+#Fig S4E-G
+```{r}
+pdf("~/m3/Plots/k2_umap.pdf")
+print(FeaturePlot_scCustom(m3_seu, features = "K21", max.cutoff = "q99",reduction = "mo_UMAP", pt.size = 0.6, order = T, colors_use =  c("#3361A5", "#1E97F7", "#61C4F4",  "#F0C86D" ,"#EC5724" ,"#A31D1D"), na_color = "gray85")+NoAxes())
+dev.off()
+
+pdf("~/m3/Plots/k1_umap.pdf")
+print(FeaturePlot_scCustom(m3_seu, features = "K11", max.cutoff = "q99",reduction = "mo_UMAP", pt.size = 0.6, order = T, colors_use =  c("#3361A5", "#1E97F7", "#61C4F4",  "#F0C86D" ,"#EC5724" ,"#A31D1D"), na_color = "gray85")+NoAxes())
+dev.off()
+
+
+pdf("~/m3/Plots/k3_umap.pdf")
+print(FeaturePlot_scCustom(m3_seu, features = "K31", max.cutoff = "q99",reduction = "mo_UMAP", pt.size = 0.6, order = T, colors_use =  c("#3361A5", "#1E97F7", "#61C4F4",  "#F0C86D" ,"#EC5724" ,"#A31D1D"), na_color = "gray85")+NoAxes())
+dev.off()
+
+```
+
+#Fig S4H-I
+
+```{r}
+combined_df<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/fusion/pb_fusion_results.csv")
+   
+#load ewing + non ewing object
+m1<-readRDS("all_parents_seurat.rds")
+
+table(colnames(m1) %in% combined_df$cb)
+length(colnames(m1))
+
+fus_df<-combined_df[grepl("EWSR1", combined_df$fusion) & grepl("FLI1", combined_df$fusion),]
+mat<-table(colnames(m1) %in% fus_df$cb, m1$cell_line) %>% as.matrix()
+mat
+
+
+df<-table(colnames(m1) %in% fus_df$cb, m1$cell_line) %>% as.data.frame()
+
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/fusion/figs/cb_overlap_ews_pbfusion.pdf", width =6, height = 5)
+ggplot(df, aes(fill = Var1, y=Freq, x=Var2)) + 
+    geom_bar(stat = "identity", color = "black")+NoGrid()+RotatedAxis()+scale_fill_manual(values = c("gray90", "red"))+theme(panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent'), #transparent plot bg
+    legend.background = element_rect(fill='transparent'))
+
+dev.off()
+
+
+df<-table(colnames(m1) %in% combined_df$cb, m1$cell_line) %>% as.data.frame()
+pdf("/fh/fast/furlan_s/user/owalt/ewings/fusion/figs/cb_overlap_pbfusion.pdf", width =6, height = 5)
+ggplot(df,  aes(fill = Var1, y=Freq, x=Var2)) + 
+    geom_bar(stat = "identity", color = "black")+NoGrid()+RotatedAxis()+scale_fill_manual(values = c("gray90", "red"))+theme(panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent'), #transparent plot bg
+    legend.background = element_rect(fill='transparent'))
+
+dev.off()
+```
+
+```{r}
+meta_fus<-fus_df[!duplicated(fus_df$cb),]
+
+m1$fus<-"NA"
+m1$fus[which(colnames(m1) %in% meta_fus$cb)]<-"EWSR1_FLI1"
+
+pb_res<-table(m1$fus, m1$cell_line)
+
+cds<-viewmastR::seurat_to_monocle3(m1, seu_rd = "mo_UMAP")
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/fusion/pbfusion_umap.pdf", width =6, height=5)
+plot_cells(cds[,order(cds$fus, decreasing = T)], color_cells_by = "fus", cell_size = 0.75, label_cell_groups = F)+scale_color_manual(values = c("red", "gray90"))+theme( panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    panel.grid.major = element_blank(), #remove major gridlines
+    panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    text = element_text(color = "white") )&NoAxes()
+
+dev.off()
+```
+
+
