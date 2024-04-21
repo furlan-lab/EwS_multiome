@@ -46,15 +46,14 @@ suppressPackageStartupMessages({
   library(viridis)
 
 })
-#load objects and set seed
-set.seed(1234)
-setwd("/fh/fast/furlan_s/user/owaltner/m2") 
-m2<-loadArchRProject()
-# m2_seu<-readRDS("~/m2/m2.rds")
-
 
 #version 11 cuda
 dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "GCC")
+
 
 library(RcppArrayFire)
 library(viewmaster)
@@ -109,7 +108,9 @@ atac_cols <- paletteContinuous(set = "blueYellow",n = 10)
 
 #load objects
 ```{r}
-setwd("m2") 
+set.seed(1234)
+
+setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl") 
 m2<-loadArchRProject()
 m2_seu<-readRDS("m2.rds")
 ```
@@ -328,9 +329,9 @@ scale_fill_gradientn(colors = paletteContinuous(set = "whiteBlue", reverse = T))
 setwd('/fh/fast/furlan_s/user/owalt/ewings/spatial')
 library(openxlsx)
 
-BiocManager::install("NanoStringNCTools")
-BiocManager::install("GeomxTools")
-BiocManager::install("GeoMxWorkflows")
+# BiocManager::install("NanoStringNCTools")
+# BiocManager::install("GeomxTools")
+# BiocManager::install("GeoMxWorkflows")
 
 library(NanoStringNCTools)
 library(GeomxTools)
@@ -393,32 +394,68 @@ nt5e_mat$sample <- se$ROILabel
 
 barplot(nt5e_mat$NT5E)
 ```
+
+gsva
+```{r}
+se$total_counts<-colSums(assays(se)$count) 
+ggplot(colData(se) %>% data.frame(), aes(y= total_counts, x = factor(ROILabel)))+geom_bar(stat="identity")
+
+
+library(GSVA)
+library(dplyr)
+library(msigdbr)
+
+msig<-msigdbr(category = "C2", subcategory = "CGP")
+kins_up<-msig[grep("KINSEY_TARGETS_OF_EWSR1_FLII_FUSION_UP", msig$gs_name),]$gene_symbol
+
+kins_down<-msig[grep("KINSEY_TARGETS_OF_EWSR1_FLII_FUSION_DN", msig$gs_name),]$gene_symbol
+
+x=assays(se)$counts %>% as.matrix()
+
+
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",] 
+k3<- link_df[link_df$kmean == "3",]
+
+gene_sets<-list( k1$gene,k2$gene, k3$gene)
+
+mat<-GSVA::gsva(x, gene_sets, method = "gsva", kcdf = "Poisson", abs.ranking = F)
+
+colnames(mat)<-se$ROILabel
+rownames(mat)<-c("k1", "k2", "k3")
+
+ht1<-Heatmap(mat, col = rna_cols, column_split = factor(se$location))
+
+x=assays(se)$counts %>% as.matrix()
+gene_sets<-list( kins_down, kins_up)
+mat<-GSVA::gsva(x, gene_sets, method = "gsva", kcdf = "Poisson", abs.ranking = F)
+
+colnames(mat)<-se$ROILabel
+rownames(mat)<-c("kins_down", "kins_up")
+
+ht2<-Heatmap(mat, col = rna_cols, column_split = factor(se$location))
+
+ht1 %v% ht2
+```
+
 try fusion regulated genes
 ```{r}
 fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
 
-kmean<-kmean[!duplicated(kmean$gene),]
+x=assays(se)$counts %>% as.matrix()
+mat<-GSVA::gsva(x, fus_kmean, method = "gsva", kcdf = "Poisson", abs.ranking = F, mx.diff=1)
 
-#get rid of cell cycle genes?
-# 
-# s.genes <- cc.genes$s.genes
-# g2m.genes <- cc.genes$g2m.genes
-# 
-# 
-# kmean<-kmean[!kmean$gene %in% c(s.genes, g2m.genes),]
+colnames(mat)<-se$ROILabel
+rownames(mat)<-c("k1", "k2", "k3")
 
+ht1<-Heatmap(mat, col = rna_cols, column_split = factor(se$location))
 
-ggplot(kmean, aes(x = Correlation, color = factor(kmean)))+geom_density()
+ht1 %v% ht2
+```
 
-kmean<-kmean[kmean$Correlation > 0.75,]
-
-
-fus_kmean <- list()
-
-fus_kmean[[1]]<-kmean[kmean$kmean == 1,]$gene
-fus_kmean[[2]]<-kmean[kmean$kmean == 2,]$gene
-fus_kmean[[3]]<-kmean[kmean$kmean == 3,]$gene
-
+add module score
+```{r}
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
 
 seu<-CreateSeuratObject(counts = mat %>% as.sparse(), meta.data = meta)
 

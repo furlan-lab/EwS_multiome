@@ -37,6 +37,7 @@ suppressPackageStartupMessages({
   library(doMC)
   library(stringr)
   library(viridis)
+  library(openxlsx)
   library(TCGAbiolinks)
   library(ComplexHeatmap)
   library(GenomicRanges)
@@ -54,6 +55,19 @@ suppressPackageStartupMessages({
   library(Matrix)
   library(scCustomize)
   library(clusterProfiler)
+  library(survival)
+  library(lubridate)
+  library(ggsurvfit)
+  library(gtsummary)
+  library(tidycmprsk)
+  library(condsurv)
+  library(SummarizedExperiment)
+  library(Seurat)
+  library(pd.huex.1.0.st.v2)
+  library(huex10sttranscriptcluster.db)
+  library(affycoretools)
+  library(ggpubr)
+  library(ComplexHeatmap)
 })
 set.seed(1234)
 
@@ -80,7 +94,7 @@ cite_cols= c("A4573" = "#9893DA","A673"="#ebeb78", "CHLA10" ="#fa9f42","CHLA9"="
 pdx_cols<-paletteDiscrete(values = levels(factor(pdx$dataset)), set = "calm")
 ```
 
-#make object
+# make object
 ```{r}
 files<-list.files(file.path(ROOT_DIR, "cellbender_filtered"))
 paths<-paste0(ROOT_DIR,"/cellbender_filtered/" ,files[1:7])
@@ -132,7 +146,7 @@ VlnPlot(sub, features =  c("log_RNA" ,"percent.mt"), pt.size = 0, ncol = 3, log=
 dev.off()
 ```
 
-#normalize data
+# normalize data
 ```{r}
 sj <- NormalizeData(sub)
 sj <- FindVariableFeatures(sj, selection.method = "vst", nfeatures = 2000)
@@ -168,7 +182,7 @@ sj<-AddModuleScore(sj, features = list(aynaud$Gene), name = "IC_EWS")
 FeaturePlot_scCustom(sj,features = "IC_EWS1",reduction = "umap")&NoAxes()
 ```
 
-#add metadata
+# add metadata
 ```{r}
 meta<-read.csv("~/sj/20220706_EWS_metadata.csv")
 
@@ -324,7 +338,7 @@ dev.off()
 
 
 
-#Save object
+# Save object
 ```{r}
 saveRDS(sj, file.path("~/sj/cds", "sj_cellbender_filtered.rds"))
 saveRDS(tum, file.path("~/sj/cds", "tumor_cellbender_filtered.rds"))
@@ -390,7 +404,7 @@ cite$subgroup[which(clusters(cite) == 7)]<-"k2"
 cite$subgroup[which(clusters(cite) == 8)]<-"k3"
 cite$subgroup[which(clusters(cite) == 9)]<-"k3"
 
-exprs <- exprs(cite)
+exprs <- monocle3::exprs(cite)
 meta <- colData(cite) %>% as.data.frame()
 embedding <- cite@int_colData@listData[["reducedDims"]]@listData[["UMAP"]] %>% as.data.frame()
 feature_meta <-  rowData(cite) %>% as.data.frame()
@@ -889,7 +903,7 @@ ca<-columnAnnotation(BioProject = bioproject, col = list(BioProject = c(PRJNA253
 Heatmap(fit_subgroup[c("k1", "k2", "k3", "intercept"),], col = viridis(100),  show_column_names  = F, show_row_names = T, cluster_rows = F, top_annotation = ca)
 ```
 
-#Patient Microarray data set1
+# Patient Microarray data set
 ```{r helpful functions}
 # gene_list<-list(kmean_probes[[3]])
 # name="k2"
@@ -966,6 +980,7 @@ rownames(directory.ws)<-directory.ws$`SPECSMAC#`
 ```
 
 ```{r build microarray object}
+library(oligo)
 setwd("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/CEL")
 rawData <- read.celfiles(CELfiles)
 getClass("GeneFeatureSet")
@@ -979,6 +994,8 @@ geneset<-oligo::rma(rawData, target = "core")
 # BiocManager::install(geneset@annotation)
 geneset
 
+library(huex10sttranscriptcluster.db)
+library(affycoretools)
 geneAcc=as.character(huex10sttranscriptclusterACCNUM[rownames(geneset)])
 geneNames=as.character(huex10sttranscriptclusterSYMBOL[rownames(geneset)])
 
@@ -993,25 +1010,42 @@ colnames(mat)
 fdat<- geneset@featureData@data
 names(fdat)<-c("id", "entrez", "gene_short_name", "description")
 obj<-CreateSeuratObject(counts = mat %>%as.sparse(), meta.data = out)
+
+se<-SummarizedExperiment(list(counts = mat), colData = out)
 ```
 
 ```{r}
-fus_kmean<-readRDS("~/m3/res/kd_kmean_genes.rds")
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
+
+
+link_df<- read.csv("/fh/fast/furlan_s/user/owaltner/m2/res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$gene),]
+link_df<-link_df[!duplicated(link_df$peak),]
+link_df$peak<-gsub(":", "-", link_df$peak)
+
+link_df<-link_df[!link_df$gene %in% c(Seurat::cc.genes$s.genes, Seurat::cc.genes$g2m.genes),]
+
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",]
+k3<- link_df[link_df$kmean == "3",]
 
 
 kmean_probes<-lapply(fus_kmean, function(x){
   fdat[fdat$gene_short_name %in% x,]$id  
 })
 
+kmean_probes<-lapply(list(k1$gene, k2$gene, k3$gene), function(x){
+  fdat[fdat$gene_short_name %in% x,]$id  
+})
 
-obj<-AddModuleScore(obj, features = kmean_probes, name = "k")
+
 obj@meta.data$OS..censor.0..dead.1.<-obj@meta.data$OS..censor.0..dead.1. %>%as.character()
 p<-ggplot(obj@meta.data[obj@meta.data$EFS.event != "SMN",], aes(x=EFS.event, y = k2))+geom_boxplot()
 p + geom_dotplot(binaxis='y', stackdir='center', dotsize=1,binwidth = 1/30)+stat_compare_means()
 ```
 
 
-#Fig 5D
+# Fig 5D
 ```{r survival curves kmean}
 pdf("../figs/k1_survival.pdf", width = 3, height = 3)
 strat_curve(obj, gene_list= list(kmean_probes[[1]]),name =  "k1")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
@@ -1031,7 +1065,51 @@ strat_curve(obj, gene_list= list(fosl2_probes[[1]]),name =  "fosl2_targets")+sca
 dev.off()
 ```
 
+# Fig 5E
+```{r}
+library(GSVA)
+library(dplyr)
+library(msigdbr)
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
 
+se<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/tumorinvasion_MA/tumorinvasion_seurat.rds")
+
+se<-se[,!is.na(se$Invading.cells.vs..core) & se$"Include.or.exclude.(proven.EWS::ETS+)" == "include"]
+
+obj<-UpdateSeuratObject(se)
+
+obj@assays$RNA@layers$data<-NULL
+
+obj<-NormalizeData(obj)
+
+obj<-AddModuleScore(obj, features = kmean_probes, name = "k")
+
+df<-obj@meta.data
+
+names(df)
+
+bxp <- ggboxplot(
+  df, x = "Invading.cells.vs..core", y = "k1", 
+  ylab = "Weight", xlab = "Groups", add = "jitter"
+  )+stat_compare_means(method = "wilcox")+ggtitle(label="k1 probes")
+bxp
+ 
+
+bxp <- ggboxplot(
+  df, x = "Invading.cells.vs..core", y = "k2", 
+  ylab = "Weight", xlab = "Groups", add = "jitter"
+  )+stat_compare_means(method = "wilcox")+ggtitle(label="k2 probes")
+bxp
+
+
+bxp <- ggboxplot(
+  df, x = "Invading.cells.vs..core", y = "k3", 
+  ylab = "Weight", xlab = "Groups", add = "jitter"
+  )+stat_compare_means(method = "wilcox")+ggtitle(label="k3 probes")
+bxp
+```
 
 # Mak PDX object
 ```{r}
@@ -1127,6 +1205,4 @@ pdf("~/pdx/figs/fus_kmean_heatmap.pdf", width = 11, height = 1.5)
 Heatmap(mat, name = "Kmean_Expression",cluster_rows = T, cluster_columns = T, show_row_dend = F,row_names_rot = 0, column_names_rot = -40, show_column_names = F, column_split = id, show_column_dend = F, use_raster = F, col = col_fun, clustering_distance_columns = "pearson", clustering_distance_rows = "pearson",top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(fill = pdx_cols, col = 0))))
 dev.off()
 ```
-
-
 
