@@ -115,7 +115,7 @@ m2<-loadArchRProject()
 m2_seu<-readRDS("m2.rds")
 ```
 
-#CHLA10 module expression Fig 3A
+#CHLA10 module expression Fig S3A
 ```{r interrogate chla10}
 chla10<-m2_seu[,m2_seu$cell_line == "CHLA10"]
 
@@ -136,7 +136,7 @@ chla10<-AddModuleScore(chla10, features = list(k1$gene, k2$gene, k3$gene), name 
 FeaturePlot_scCustom(chla10, features = c("k1", "k2", "k3"), colors_use = rna_cols,na_cutoff = 0.05)&NoAxes()
 ```
 
-#CHLA10 module peak accessibility Fig 3B
+#CHLA10 module peak accessibility Fig S3B
 ```{r interrogate chla10}
 DefaultAssay(chla10)<-"ATAC"
 gr<-StringToGRanges(rownames(chla10)) %>% sort()
@@ -153,7 +153,7 @@ ov_peaks<-lapply(list(k1,k2,k3), function(x){
 chla10<-AddModuleScore(chla10, features = ov_peaks, name = "atac_k")
 FeaturePlot_scCustom(chla10, features = c("atac_k1", "atac_k2", "atac_k3"), colors_use = atac_cols,na_cutoff = 0.05)&NoAxes()
 ```
-#Fig 3C
+#Fig S3C
 ```{r compare cluster C22 to C23 Motif }
 m2<-addMotifAnnotations(m2, force = T)
 
@@ -218,7 +218,7 @@ gg
 dev.off()
 ```
 
-#Fig 3D
+#Fig S3D
 ```{r compare cluster C22 to C23 GEX}
 c22_genes <- getMarkerFeatures(
     ArchRProj = m2, 
