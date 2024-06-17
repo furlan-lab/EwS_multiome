@@ -1,5 +1,5 @@
 ---
-title: "Knockdown figure - 4"
+title: "Knockdown figure - 3"
 output: html_notebook
 editor_options: 
   chunk_output_type: console
