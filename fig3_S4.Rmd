@@ -107,7 +107,7 @@ mtf_cols<-pal
 atac_cols <- paletteContinuous(set = "blueYellow",n = 10)
 ```
 
-#GGAA microsatelitie EWS:FLI binding sites chromvar Fig 4A
+#GGAA microsatelitie EWS:FLI binding sites chromvar Fig 3A
 ```{r}
 msat_regs<-read.table("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/ggaa.bed", header = F)
 non_msat_regs<-read.table("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/non_ggaa.bed")
@@ -155,7 +155,7 @@ FeaturePlot_scCustom(m1_seu, features = c("msat_EWS_FLI_binding", "non_msat_EWS_
 ```
 
 
-#enrichment of fusion binding sites Fig 4B
+#enrichment of fusion binding sites Fig 3B
 ```{r load fli binding sites from orth paper}
 fli<-read.csv("~/m2/fli_bind.csv")
 fli<-fli[2:length(fli$X),]
@@ -219,7 +219,7 @@ ggplot(fli_df, aes(x = distance, y = enrich, color = msat))+geom_smooth()+theme_
 dev.off()
 ```
 
-#Dimplot Fig 4C
+#Dimplot Fig 3C
 ```{r Dim Plot}
 m3_cds<-seurat_to_monocle3(m3_seu, seu_rd = "mo_UMAP")
 
@@ -239,7 +239,7 @@ k3<- link_df[link_df$kmean == "3",]
 corr<-read.csv("~/m2/res/tf_motif_expression_correlation_exp_wide.csv")
 ```
 
-#fli perturbations Fig 4D-F
+#fli perturbations Fig 3D-F
 ```{r KMEAN / IC_EWS GEX}
 DefaultAssay(m3_seu)<-"GeneExpressionMatrix"
 
