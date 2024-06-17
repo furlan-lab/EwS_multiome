@@ -291,7 +291,7 @@ VlnPlot(sj, features = "log_RNA", group.by = "Sample", cols =sfc(n=20, scramble 
 plot_cells(cds, genes = "MKI67", label_cell_groups = F, cell_size = 0.75, scale_to_range = F)+scale_color_gradientn(colors=c("gray90",  "#04578f", "#801b1b"))+NoAxes()
 ```
 
-#tumor only patient samples UMAP, Fig 5A
+#tumor only patient samples UMAP, Fig 4A
 ```{r}
 tum<-sj[,sj$cell_type == "tumor"]
 set.seed(1234)
@@ -319,7 +319,7 @@ plot_cells(cds, color_cells_by = "dataset", label_cell_groups = F, cell_size = 0
 
 
 
-#Fig 5B & S5B
+#Fig 4B & S5B
 ```{r fusion dependent kmean genes UMAP}
 fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
 aynaud<-read.delim("/fh/fast/furlan_s/user/owalt/ewings/multiome/EW4/ICEWS_genes.txt")
@@ -875,7 +875,7 @@ Heatmap(fit_cl[c("SKNMC", "A673", "CHLA9", "PDX305", "TC32", "A4573", "CHLA10", 
 
 ```
 
-#Fig 5C
+#Fig 4C
 ```{r tumor vs subgroup}
 sfit<-py$fit
 # sfitW<-sfit[rowSums(sfit)>0.3,]
@@ -1017,7 +1017,7 @@ kmean_probes<-lapply(fus_kmean, function(x){
 kmean_probes[[1]] %in% rownames(obj) %>% table()
 ```
 
-# Fig 5D
+# Fig 4D
 ```{r survival curves kmean}
 pdf("../figs/k1_survival.pdf", width = 3, height = 3)
 strat_curve(obj, gene_list= list(kmean_probes[[1]]),name =  "k1")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
@@ -1038,7 +1038,7 @@ obj@meta.data %>% names()
 ```
 
 
-# Fig 5E
+# Fig 4E
 ```{r}
 library(GSVA)
 library(dplyr)
@@ -1149,7 +1149,7 @@ pdx$localization[pdx$dataset == "PDX_1058"]<-"metastatic (relapse)"
 ```
 
 
-# PDX Dim Plot, Fig S6C
+# PDX Dim Plot, Fig S5C
 ```{r}
 DimPlot(pdx, reduction = "sct_umap", group.by = "dataset")
 cds<-seurat_to_monocle3(pdx, seu_rd = "sct_umap")
@@ -1158,7 +1158,7 @@ plot_cells(cds, color_cells_by = "dataset", label_cell_groups = F)+scale_color_m
 dev.off()
 ```
 
-# kmean analysis, Fig S6D
+# kmean analysis, Fig S5D
 ```{r fusion regulated kmean genes}
 fus_kmean<-readRDS("~/m3/res/kd_kmean_genes.rds")
 pdx<-AddModuleScore(pdx, features = fus_kmean, name = "k")
