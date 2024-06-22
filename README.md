@@ -7,7 +7,7 @@
 
 This repository hosts code notebooks used to generate figures from the above titled manuscript.
 
-**Processed, seurat objects are hosted [here](https://zenodo.org/records/12209095).**<
+**Processed, seurat objects are hosted [here](https://zenodo.org/records/12209095).**
 
 <p align="center"><img src="img/furlan_lab_logo.png" alt="" width="400"></a></p>
 <hr>
