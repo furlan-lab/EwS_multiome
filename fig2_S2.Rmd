@@ -57,7 +57,6 @@ knitr::opts_chunk$set(dev="CairoPNG")
 
 #load objects and set seed
 set.seed(1234)
-cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/092921_cite.rds")
 #version 11 cuda
 dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
 library(RcppArrayFire)
@@ -109,7 +108,7 @@ set.seed(1234)
 
 setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl") 
 m2<-loadArchRProject()
-m2_seu<-readRDS("m2.rds")
+m2_seu<-readRDS("9cl_seurat.rds")
 ```
 
 #Get peak to gene links, Fig 2A
