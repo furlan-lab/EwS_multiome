@@ -1,4 +1,4 @@
-### Multimodal single cell analyses reveal distinct fusion regulated transcriptional programs in Ewing sarcoma
+# Multimodal single cell analyses reveal distinct fusion regulated transcriptional programs in Ewing sarcoma
 
 <!-- ![Graphical Abstract!](/img/schema.png "Graphical Abstract") -->
 
@@ -9,6 +9,6 @@ This repository hosts code notebooks used to generate figures from the above tit
 
 Processed, seurat objects are hosted [here](https://zenodo.org/records/12209095).
 
-<p align="center"><img src="img/furlan_lab_logo.png" alt="" width="300"></a></p>
+<p align="center"><img src="img/furlan_lab_logo.png" alt="" width="400"></a></p>
 <hr>
 
