@@ -2,7 +2,7 @@
 
 <!-- ![Graphical Abstract!](/img/schema.png "Graphical Abstract") -->
 
-<p align="center"><img src="img/schema.png" alt="" width="800"></a></p>
+<p align="center"><img src="img/schema.png" alt="" width="700"></a></p>
 <hr>
 
 This repository hosts code notebooks used to generate figures from the above titled manuscript.
