@@ -1,0 +1,459 @@
+---
+title: "EwS cell lines vehicle tgfb1"
+author: "MM"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(reticulate)
+  library(openxlsx)
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  library(pals)
+  library(rhdf5)
+  library(RColorBrewer)
+  library(Signac)
+  library(Seurat)
+  library(ggplot2)
+  library(future)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(viridis)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(ggpubr)
+  library(parallel)
+  library(scCustomize)
+  library(SeuratObject)
+  library(viewmastR)
+  library(flscuts)
+  library(chromVAR)
+  library(BiocParallel)
+  library(motifmatchr)
+})
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "OpenBLAS/0.3.21-GCC-12.2.0")
+module("load", "MACS2/2.2.9.1-foss-2022b")
+Sys.setenv(R_LIBS_USER="/home/owaltner/R/x86_64-pc-linux-gnu-library/4.2")
+
+
+knitr::opts_chunk$set(dev="CairoPNG")
+
+#library(RcppArrayFire)
+
+rna_cols <- paletteContinuous(n=8)[c(1:3, 6:8)]
+cell_line_cols<-c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500")
+cell_line_cond_cols<-c( "A673_vehicle" = "#272E6A","A673_TGFB1" = "#666ca5", "CHLA10_vehicle"= "#89288F", "CHLA10_TGFB1" = "#cb89e1", "TC71_vehicle" = "#ed62ba", "TC71_TGFB1" = "#efbbe3")
+cond_cols<-c("vehicle" = "gray80", "TGFB1" ="#c72323")
+cluster_cols<-c("0" = "gray50", "1"="#df76a4","2"="#5ca867","3"="#336eae","4"="#ea9a50", "5"="#d0493d","6"="#7b5fa2","7"="#88c7c0","8"= "#4c9096")
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+chromvar_cols<-pal
+```
+
+```{r}
+setwd('/fh/scratch/delete90/furlan_s/EW5_MO')
+
+#lane1=vehicle, lane2=TGFB1, lane3=TGFB2, lane4=VTP, lane5=VTP+TGFB1
+#samps<-c("EWS5_MO_P1_redo","EWS5_MO_P2", "EWS5_MO_P3", "EWS5_MO_P4", "EWS5_MO_P5_redo")
+
+#lane1 and lane2 only
+samps<-c("EWS5_MO_P1_redo","EWS5_MO_P2")
+
+macs_peaks<-lapply(samps, function(i){
+  peaks <- read.table(file = file.path("peaks", i, "macs2_peaks.narrowPeak"))
+  colnames(peaks)<-c("chr start end name integer_score none fold_enrichment log10pvalue log10qvalue relative_summit_pos") %>% strsplit(" ") %>% unlist()
+  peaks
+})
+
+macs_granges<-lapply(macs_peaks, makeGRangesFromDataFrame)
+macs_cgranges<-do.call(c, macs_granges)
+macs_mo.peaks <- reduce(x = macs_cgranges)
+
+peakwidths <- width(macs_mo.peaks)
+macs_mo.peaks <- macs_mo.peaks[peakwidths  < 10000 & peakwidths > 20]
+macs_mo.peaks <- keepStandardChromosomes(macs_mo.peaks, pruning.mode = "coarse")
+
+meta<-lapply(samps, function(i){
+  tab<-read.table(
+  file = file.path( i, "outs/per_barcode_metrics.csv"),
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+  )
+  tab[tab$is_cell!=0, ]
+})
+
+frags<-lapply(1:length(samps), function(i){
+  CreateFragmentObject(
+    path = file.path(samps[i], "outs/atac_fragments.tsv.gz"),
+    cells = meta[[i]]$gex_barcode)
+})
+
+# frags<-lapply(frags, function(frag){
+#   frag@path<-gsub("~/EW4/data", DATA_DIR, frag@path )
+#   frag
+# })
+
+macs_counts <- lapply(1:length(samps), function(i){
+  FeatureMatrix(
+  fragments = frags[[i]], process_n = 5000,
+  features = macs_mo.peaks,
+  cells = rownames(meta[[i]]))
+})
+
+#saveRDS(macs_counts, file.path("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/macs_counts_lanes1_2_MM.rds"))
+
+macs_counts<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/macs_counts_lanes1_2_MM.rds")
+# extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+
+#BiocManager::install("GenomeInfoDb", force = T)
+# change to UCSC style 
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "hg38"
+
+#annotations@seqnames@values <- paste0("chr", annotations@seqnames@values)
+
+# saveRDS(annotations, file = "~/annotations_hg38.rds")
+
+seus<-lapply(1:length(samps), function(i){
+  raw<-Read10X_h5(file.path(samps[i],  "outs/filtered_feature_bc_matrix.h5"))
+  seu<-CreateSeuratObject(
+    counts = raw$`Gene Expression`[,colnames(macs_counts[[i]])], assay= "RNA", meta.data = meta[[i]])
+  seu[["ATAC"]]<-CreateChromatinAssay(macs_counts[[i]], fragments = frags[[i]], sep = c(":", "-"), annotation = annotations)
+  seu$dataset<-samps[i]
+  seu
+})
+
+mo <- merge(
+  x = seus[[1]],
+  y = seus[2:length(seus)],
+  add.cell.ids = samps
+)
+
+macs_counts<-NULL
+seus <- NULL
+
+DefaultAssay(mo) <- "ATAC"
+mo$Frip<-mo$atac_peak_region_fragments/mo$atac_fragments
+mo$log_ATAC<-log10(mo$nCount_ATAC)
+
+#fix the seqnames, duplicate chr
+seqlevels(annotations) <- sub("^chrchr", "chr", seqlevels(annotations))
+
+# compute TSS enrichment score per cell
+mo <- TSSEnrichment(object = mo, fast = F)
+mo <- NucleosomeSignal(mo)
+DefaultAssay(mo) <- "RNA"
+mo[["percent.mt"]] <- PercentageFeatureSet(mo, pattern = "^MT-")
+mo$log_RNA<-log10(mo$nCount_RNA)
+```
+
+```{r}
+VlnPlot(mo, features =  c("log_RNA", "log_ATAC", "percent.mt", "Frip"), pt.size = 0, ncol = 3, group.by="dataset")
+
+mo<- subset(
+  x =mo,
+  subset = 
+    percent.mt <= 15 &
+    log_ATAC >= 3 &
+    log_ATAC <=  4.5 &
+    log_RNA <= 4.5 &
+    log_RNA >= 3 )
+
+VlnPlot(mo, features =  c("log_RNA", "log_ATAC", "percent.mt", "Frip"), pt.size = 0, ncol = 3, group.by="dataset")
+#mo<-saveRDS(mo,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+```
+
+# get souporcell genotype
+```{r}
+
+mo<-add_souporcell_seurat(mo, file.path("merge_atac/souporcell_3", "clusters.tsv"), meta_data_label = "geno_3")
+DimPlot(mo, group.by = "geno_3")
+mo<-mo[,!mo$geno_3 %in% "Multiplet"]
+DimPlot(mo, group.by = "geno_3")
+table(mo$geno_3)
+
+#mo<-saveRDS(mo,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+```
+
+# co embed with CITE-seq data 
+```{r}
+cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/092921_cite.rds")
+DimPlot(cite)
+DefaultAssay(mo)<-"RNA"
+DefaultAssay(cite)<-"RNA"
+
+mo<-mo %>% NormalizeData() %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA() %>% FindNeighbors() %>% FindClusters()
+mo<-RunUMAP(mo, dims = 1:30)
+library(scCustomize)
+FeaturePlot_scCustom(mo, features = "log_RNA")
+
+anchors <- FindTransferAnchors(reference = cite, query = mo, dims = 1:30,
+    reference.reduction = "pca")
+cite$CellLine %>% unique()
+predictions <- TransferData(anchorset = anchors, refdata = cite$CellLine, dims = 1:30)
+mo <- AddMetaData(mo, metadata = predictions)
+
+DimPlot(mo, group.by = "predicted.id")
+DimPlot(mo, group.by = "geno_3")
+DimPlot(mo, group.by = "dataset")
+
+#converts straing values to numeric
+mo$geno_3 <- as.numeric(mo$geno_3)
+
+mo$cell_line<-NA
+mo$cell_line[mo$geno_3 == 1]<-"A673"
+mo$cell_line[mo$geno_3 == 2]<-"CHLA10"
+mo$cell_line[mo$geno_3 == 3]<-"TC71"
+
+#mo<-saveRDS(mo,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+```
+
+```{r}
+
+mo$dataset %>% unique()
+mo$condition<-NA
+mo$condition[mo$dataset == "EWS5_MO_P1_redo"]<-"vehicle"
+mo$condition[mo$dataset == "EWS5_MO_P2"]<-"TGFB1"
+
+mo$cell_line_cond<-paste0(mo$cell_line, "_", mo$condition)
+DimPlot(mo, group.by = "cell_line_cond")+scale_color_manual(values = cell_line_cond_cols)
+```
+
+# do WNN UMAP
+```{r}
+# ATAC analysis
+# We exclude the first dimension as this is typically correlated with sequencing depth
+DefaultAssay(mo) <- "ATAC"
+mo <- RunTFIDF(mo)
+mo <- FindTopFeatures(mo, min.cutoff = 'q0')
+mo <- RunSVD(mo)
+mo <- RunUMAP(mo, reduction = 'lsi', dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+
+DimPlot(mo, group.by = "cell_line_cond")+scale_color_manual(values = paletteDiscrete(values = unique(mo$cell_line_cond), set = "paired"))
+mo <- FindMultiModalNeighbors(mo, reduction.list = list("pca", "lsi"), dims.list = list(1:30, 2:30))
+mo <- RunUMAP(mo, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+mo <- FindClusters(mo, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+
+DimPlot(mo, group.by = "cell_line",reduction = "wnn.umap")+scale_color_manual(values = paletteDiscrete(values = unique(mo$cell_line), set = "paired"))
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_wnn_umap_cell_line_cond.pdf", width =5, height = 4.5)
+DimPlot(mo, group.by = "cell_line_cond",reduction = "wnn.umap")+scale_color_manual(values =cell_line_cond_cols)+NoAxes()
+dev.off()
+
+#saveRDS(mo,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+```
+
+#motif
+```{r}
+mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+
+#mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat.rds")
+DefaultAssay(mo)<-"ATAC"
+# Get a list of motif position frequency matrices from the JASPAR database
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
+)
+
+# add motif information
+mo <- AddMotifs(
+  object = mo,
+  genome = BSgenome.Hsapiens.UCSC.hg38,
+  pfm = pfm
+)
+
+#register(SerialParam())
+
+register(MulticoreParam(8))
+
+mo <- RunChromVAR(
+  object = mo,
+  new.assay.name = "MOTIF",
+  genome =BSgenome.Hsapiens.UCSC.hg38
+)
+
+# cisbp
+
+pfm<-readRDS("/fh/fast/furlan_s/grp/refs/pfms/cisBP_human_pfms_2021.rds")
+
+# add motif information
+mo <- AddMotifs(
+  object = mo,
+  genome = BSgenome.Hsapiens.UCSC.hg38,
+  pfm = pfm
+)
+
+#register(SerialParam())
+
+register(MulticoreParam(8))
+
+mo <- RunChromVAR(
+  object = mo,
+  new.assay.name = "MOTIF_cisbp",
+  genome =BSgenome.Hsapiens.UCSC.hg38
+)
+
+saveRDS(mo,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+
+#mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+```
+
+# add fragmenst back to object since it got deleted from scratch
+```{r}
+mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+
+mo@assays[["ATAC"]]@fragments[[1]]@path<-"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/data/P1_atac_fragments.tsv.gz"
+mo@assays[["ATAC"]]@fragments[[2]]@path<-"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/data/P2_atac_fragments.tsv.gz"
+
+mo@assays$ATAC
+```
+
+
+# get peak to gene links
+```{r}
+DefaultAssay(mo)<-"ATAC"
+mo<-LinkPeaks(
+  object = mo,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  verbose = TRUE
+)
+saveRDS(mo,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+
+```
+
+
+# cluster cell lines individually and calculate condition abundance
+```{r}
+mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+
+# chla10
+chla10<-mo[,mo$cell_line == "CHLA10"]
+DefaultAssay(chla10)<-"RNA"
+chla10<-RunUMAP(chla10, dims = 1:30)
+DefaultAssay(chla10)<-"ATAC"
+chla10<-RunUMAP(chla10, dims = 2:30)
+
+chla10 <- FindMultiModalNeighbors(chla10, reduction.list = list("pca", "lsi"), dims.list = list(1:30, 2:30))
+chla10 <- RunUMAP(chla10, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+chla10 <- FindClusters(chla10, graph.name ="wsnn", resolution= 0.5, verbose = FALSE)
+
+
+DefaultAssay(chla10)<-"ATAC"
+chla10<-LinkPeaks(
+  object = chla10,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  verbose = TRUE
+)
+saveRDS(chla10,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_chla10.rds")
+
+
+kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+DefaultAssay(chla10)<-"RNA"
+chla10<-JoinLayers(chla10)
+chla10<-AddModuleScore(chla10, features = kmean, name = "K")
+
+DimPlot(chla10, reduction= "wnn.umap")+scale_color_manual(values = ArchR::paletteDiscrete(unique(chla10$wsnn_res.0.5)))
+DefaultAssay(chla10)<-"RNA"
+
+chla10$cell_line_cond<-factor(chla10$cell_line_cond, levels = c("CHLA10_vehicle", "CHLA10_TGFB1"))
+
+chla10<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_chla10.rds")
+```
+
+
+```{r}
+mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+# a673
+a673<-mo[,mo$cell_line == "A673"]
+DefaultAssay(a673)<-"RNA"
+a673<-RunUMAP(a673, dims = 1:20)
+DefaultAssay(a673)<-"ATAC"
+a673<-RunUMAP(a673, dims = 2:20)
+
+a673 <- FindMultiModalNeighbors(a673, reduction.list = list("pca", "lsi"), dims.list = list(1:20, 2:20))
+a673 <- RunUMAP(a673, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+a673 <- FindClusters(a673, graph.name ="wsnn", resolution= 0.5, verbose = FALSE)
+
+DefaultAssay(a673)<-"ATAC"
+a673<-LinkPeaks(
+  object = a673,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  verbose = TRUE
+)
+saveRDS(a673,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_a673.rds")
+
+
+kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+DefaultAssay(a673)<-"RNA"
+a673<-JoinLayers(a673)
+a673<-AddModuleScore(a673, features = kmean, name = "K")
+
+DimPlot(a673, reduction= "wnn.umap")+scale_color_manual(values = ArchR::paletteDiscrete(unique(a673$wsnn_res.0.5)))
+DefaultAssay(a673)<-"RNA"
+
+a673$cell_line_cond<-factor(a673$cell_line_cond, levels = rev(c("A673_vehicle", "A673_TGFB1")))
+a673<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_a673.rds")
+
+```
+
+# TC71
+```{r}
+tc71<-mo[,mo$cell_line == "TC71"]
+DefaultAssay(tc71)<-"RNA"
+tc71<-RunUMAP(tc71, dims = 1:30)
+DefaultAssay(tc71)<-"ATAC"
+tc71<-RunUMAP(tc71, dims = 2:30)
+
+tc71 <- FindMultiModalNeighbors(tc71, reduction.list = list("pca", "lsi"), dims.list = list(1:30, 2:30))
+tc71 <- RunUMAP(tc71, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+tc71 <- FindClusters(tc71, graph.name ="wsnn", resolution= 0.5, verbose = FALSE)
+
+DefaultAssay(tc71)<-"ATAC"
+tc71<-LinkPeaks(
+  object = tc71,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  verbose = TRUE
+)
+saveRDS(tc71,"/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_tc71.rds")
+
+kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+DefaultAssay(tc71)<-"RNA"
+tc71<-JoinLayers(tc71)
+tc71<-AddModuleScore(tc71, features = kmean, name = "K")
+
+DimPlot(tc71, reduction= "wnn.umap")+scale_color_manual(values = ArchR::paletteDiscrete(unique(tc71$wsnn_res.0.5)))
+DefaultAssay(tc71)<-"RNA"
+
+tc71$cell_line_cond<-factor(tc71$cell_line_cond, levels = rev(c("TC71_vehicle", "TC71_TGFB1")))
+
+tc71<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_tc71.rds")
+
+
+```

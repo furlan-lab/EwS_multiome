@@ -1,0 +1,106 @@
+---
+title: "load pbfusion data"
+output: html_notebook
+---
+
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages({
+   library(monocle3)
+  # library(reticulate)
+  library(openxlsx)  
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  # library(pals)
+  library(rhdf5)
+  library(RColorBrewer)
+  library(Signac)
+  library(Seurat)
+  library(ggplot2)
+  library(future)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(parallel)
+  library(pbapply)
+  library(pbmcapply)
+  library(scCustomize)
+  library(SeuratObject)
+})
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "MACS2/2.2.6-foss-2019b-Python-3.7.4")
+
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+options(future.globals.maxSize = 360 * 1024 ^ 3) # for 50 Gb RAM
+knitr::opts_chunk$set(dev="CairoPNG")
+
+library(RcppArrayFire)
+library(viewmaster)
+```
+
+#PbFusion
+```{r}
+setwd("/fh/scratch/delete90/furlan_s/targ_reseq/221128_SamiPB")
+meta<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/fusion/data/_README.tsv", sep = "\t")
+meta$lane<-c("EW_1_Mo", "EW_2_Mo", "EW_3_Mo", "E1", "E2", "E3", "EW4_L1", "EW4_L2", "EW4_L3", "EW4_L4", "EW4_L5", "EW4_L6")
+
+samps<-rep(list.files()[5:8], 3) %>% sort()
+meta$samps<-samps
+
+x<-"1_A01"
+i<-"bc1001--bc1001"
+
+ct_list<-pbmclapply(levels(factor(meta$samps)), function(x){
+  sub<-meta[meta$samps == x,]
+  cb_gene_mol_list<-pbmclapply(levels(factor(sub$barcode)), function(i){
+    sub<-sub[sub$barcode == i,]
+    files<-list.files(file.path(x, i))
+    
+    #get fusion break points for sample
+    ct<-read.table(file.path(x, i, files[grep("\\.pbfusion.breakpoints.groups.bed$", files)]))
+    ct$barcode <-i
+    ct$samp<-x
+    
+    #get cb & molecule info
+    cb<-read.delim(file.path(x, i, files[grep("\\.output.txt$", files)]), header = F)
+    rcs<-spgs::reverseComplement(cb$V2, case = "upper")  %>% paste0(sub$lane,"_", . , "-1")
+    cb$cb_10x<-rcs
+    cb<-cb[!duplicated(cb$V1),]
+    
+    #make new table of molecule gene & barcode
+    v<-1
+    mol_gene_cb_df<-lapply(1:length(ct$V12), function(v){
+      #v<-146
+      sub<-ct[v,]
+      genes<-str_split(sub$V11, "GENE_NAME") %>% sapply("[[", 2) %>% str_split(",") %>% unlist() %>% gsub("S=", "",.) %>% gsub(";", "",.)
+      mols<-str_split(sub$V12, ",") %>% unlist() %>% gsub("READS=", "",.)
+      cbs<-cb[which(cb$V1 %in% mols),]$cb_10x
+      df<-data.frame(molecule = unique(mols), cb =cbs, fusion = paste(genes,collapse='_') %>% rep(length(unique(mols))))
+      df
+      
+    })
+    
+    combined_df<-do.call(rbind, mol_gene_cb_df)
+    combined_df
+    
+  }, mc.cores = detectCores())
+  
+  combined_df<-do.call(rbind, cb_gene_mol_list)
+  combined_df
+}, mc.cores = detectCores()) 
+   
+#barcodes to extract
+combined_df<-do.call(rbind, ct_list)
+
+write.csv(combined_df, "/fh/fast/furlan_s/user/owalt/ewings/fusion/pb_fusion_results.csv")
+```
+

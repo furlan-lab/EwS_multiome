@@ -1,0 +1,627 @@
+---
+title: "EwS cell lines vehicle tgfb1"
+author: "MM"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(reticulate)
+  library(openxlsx)
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  library(pals)
+  library(rhdf5)
+  library(RColorBrewer)
+  library(Signac)
+  library(Seurat)
+  library(ggplot2)
+  library(future)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(viridis)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(ggpubr)
+  library(parallel)
+  library(scCustomize)
+  library(SeuratObject)
+  library(viewmastR)
+  library(flscuts)
+  library(chromVAR)
+  library(BiocParallel)
+  library(motifmatchr)
+})
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "OpenBLAS/0.3.21-GCC-12.2.0")
+module("load", "MACS2/2.2.9.1-foss-2022b")
+Sys.setenv(R_LIBS_USER="/home/owaltner/R/x86_64-pc-linux-gnu-library/4.2")
+
+
+knitr::opts_chunk$set(dev="CairoPNG")
+
+#library(RcppArrayFire)
+
+rna_cols <- paletteContinuous(n=8)[c(1:3, 6:8)]
+cell_line_cols<-c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500")
+cell_line_cond_cols<-c( "A673_vehicle" = "#272E6A","A673_TGFB1" = "#666ca5", "CHLA10_vehicle"= "#89288F", "CHLA10_TGFB1" = "#cb89e1", "TC71_vehicle" = "#ed62ba", "TC71_TGFB1" = "#efbbe3")
+cond_cols<-c("vehicle" = "gray80", "TGFB1" ="#c72323")
+cluster_cols<-c("0" = "gray50", "1"="#df76a4","2"="#5ca867","3"="#336eae","4"="#ea9a50", "5"="#d0493d","6"="#7b5fa2","7"="#88c7c0","8"= "#4c9096")
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+chromvar_cols<-pal
+```
+
+# Fig 5A, Fig S4B
+```{r}
+a673<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_a673.rds")
+
+kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+DefaultAssay(a673)<-"RNA"
+a673<-JoinLayers(a673)
+a673<-AddModuleScore(a673, features = kmean, name = "K")
+
+DimPlot(a673, reduction= "wnn.umap")+scale_color_manual(values = ArchR::paletteDiscrete(unique(a673$wsnn_res.0.5)))
+DefaultAssay(a673)<-"RNA"
+
+a673$cell_line_cond<-factor(a673$cell_line_cond, levels = rev(c("A673_vehicle", "A673_TGFB1")))
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_a673_cond_wnn_umap.pdf", width = 5, height = 4.5)
+DimPlot(a673, group.by =  "cell_line_cond", reduction= "wnn.umap", shuffle = T, pt.size = 1)+scale_color_manual(values = cell_line_cond_cols)+NoAxes()
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_a673_clusters_wnn_umap.pdf", width = 5, height = 4.5)
+DimPlot_scCustom(a673, group.by =  "wsnn_res.0.5", reduction= "wnn.umap", order = T, pt.size = 1, label = T, label.box = T, label.size =5)+scale_color_manual(values = cluster_cols)+NoAxes()+scale_fill_manual(values = rep("white", 9))
+dev.off()
+
+df<-table(a673$wsnn_res.0.5, a673$cell_line_cond) %>% as.data.frame()
+df$Var2<-factor(df$Var2, levels = c("A673_vehicle", "A673_TGFB1"))
+df$Var1<-factor(df$Var1, levels = sort(unique(a673$wsnn_res.0.5)))
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_a673_cond_barplot_clusters.pdf", width = 5, height = 5)
+ggplot(df, aes(fill = Var2, y=Freq, x=Var1)) + 
+  geom_bar(stat = "identity",  position = "fill")+scale_fill_manual(values = cell_line_cond_cols)+theme_classic()+RotatedAxis()+NoGrid()
+dev.off()
+
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_a673_kmean_umap.pdf", width = 5, height = 4.25)
+FeaturePlot_scCustom(a673, features = c("K1", "K2", "K3"), colors_use = rna_cols,reduction= "wnn.umap")&NoAxes()
+dev.off()
+
+
+a673$wsnn_res.0.5<-factor(a673$wsnn_res.0.5, levels = rev(sort(unique(a673$wsnn_res.0.5))))
+```
+
+
+#Fig 5B Fig S4B
+# cluster cell lines individually and calculate condition abundance
+```{r}
+chla10<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_chla10.rds")
+
+kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+DefaultAssay(chla10)<-"RNA"
+chla10<-JoinLayers(chla10)
+chla10<-AddModuleScore(chla10, features = kmean, name = "K")
+
+DimPlot(chla10, reduction= "wnn.umap")+scale_color_manual(values = ArchR::paletteDiscrete(unique(chla10$wsnn_res.0.5)))
+DefaultAssay(chla10)<-"RNA"
+
+chla10$cell_line_cond<-factor(chla10$cell_line_cond, levels = c("CHLA10_vehicle", "CHLA10_TGFB1"))
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_chla10_cond_wnn_umap.pdf", width = 5, height = 4.5)
+DimPlot(chla10, group.by =  "cell_line_cond", reduction= "wnn.umap",pt.size = 1, shuffle = T)+scale_color_manual(values = cell_line_cond_cols)+NoAxes()
+dev.off()
+
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_chla10_clusters_wnn_umap.pdf", width = 4.25, height = 4.5)
+DimPlot(chla10, group.by =  "wsnn_res.0.5", reduction= "wnn.umap", order = T, pt.size = 1, label = T, label.box = T, label.size =5)+scale_color_manual(values =cluster_cols)+NoAxes()+scale_fill_manual(values = rep("white", 9))
+dev.off()
+
+df<-table(chla10$wsnn_res.0.5, chla10$cell_line_cond) %>% as.data.frame()
+df$Var2<-factor(df$Var2, levels = c("CHLA10_vehicle", "CHLA10_TGFB1"))
+df$Var1<-factor(df$Var1, levels = rev(sort(unique(chla10$wsnn_res.0.5))))
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_chla10_cond_barplot_clusters.pdf", width = 5, height = 5)
+ggplot(df, aes(fill = Var2, y=Freq, x=Var1)) + 
+    geom_bar(stat = "identity",  position = "fill")+scale_fill_manual(values = cell_line_cond_cols)+theme_classic()+RotatedAxis()+NoGrid()
+dev.off()
+
+VlnPlot(chla10, features = "K2", group.by = "wsnn_res.0.5", pt.size =0) +
+  scale_fill_manual(values = c("1"="#df76a4","2"="#5ca867","3"="#336eae","4"="#ea9a50", "5"="#d0493d","6"="#7b5fa2","7"="#88c7c0","8"= "#4c9096"))
+
+chla10$wsnn_res.0.5<-factor(chla10$wsnn_res.0.5, levels = rev(sort(unique(chla10$wsnn_res.0.5))))
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_chla10_kmean_clusters.pdf", width = 3.5, height = 4.25)
+DotPlot(chla10, features = c("K1", "K2", "K3"), group.by = "wsnn_res.0.5")+scale_color_gradientn(colors = rna_cols)+RotatedAxis()
+dev.off()
+
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_chla10_kmean_umap.pdf", width = 5, height = 4.25)
+FeaturePlot_scCustom(chla10, features = c("K1", "K2", "K3"), colors_use = rna_cols,reduction= "wnn.umap")&NoAxes()
+dev.off()
+
+
+DefaultAssay(chla10)<-"RNA"
+corr<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/tf_motif_expression_correlation_exp_wide.csv")
+tfs<-corr[corr$TFRegulator=="YES",]$MotifMatrix_name
+
+chla10$wsnn_res.0.5<-factor(chla10$wsnn_res.0.5, levels = rev(sort(unique(chla10$wsnn_res.0.5))))
+
+
+```
+
+#Fig 5C Fig S4B
+# TC71
+```{r}
+tc71<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_tc71.rds")
+
+kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+DefaultAssay(tc71)<-"RNA"
+tc71<-JoinLayers(tc71)
+tc71<-AddModuleScore(tc71, features = kmean, name = "K")
+
+DimPlot(tc71, reduction= "wnn.umap")+scale_color_manual(values = ArchR::paletteDiscrete(unique(tc71$wsnn_res.0.5)))
+DefaultAssay(tc71)<-"RNA"
+
+tc71$cell_line_cond<-factor(tc71$cell_line_cond, levels = rev(c("TC71_vehicle", "TC71_TGFB1")))
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_tc71_cond_wnn_umap.pdf", width = 5, height = 4.5)
+DimPlot(tc71, group.by =  "cell_line_cond", reduction= "wnn.umap", shuffle = T, pt.size = 1)+scale_color_manual(values = cell_line_cond_cols)+NoAxes()
+dev.off()
+
+t<-colorRampPalette(paletteer::paletteer_d("PrettyCols::PinkGreens"))(9)
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_tc71_clusters_wnn_umap.pdf", width = 5, height = 4.5)
+DimPlot(tc71, group.by =  "wsnn_res.0.5", reduction= "wnn.umap",order = T, pt.size = 1, label = T, label.box = T, label.size =5)+scale_color_manual(values = cluster_cols)+NoAxes()+scale_fill_manual(values = rep("white", 9))
+dev.off()
+
+df<-table(tc71$wsnn_res.0.5, tc71$cell_line_cond) %>% as.data.frame()
+df$Var2<-factor(df$Var2, levels = c("TC71_vehicle", "TC71_TGFB1"))
+df$Var1<-factor(df$Var1, levels = sort(unique(tc71$wsnn_res.0.5)))
+
+table(tc71$wsnn_res.0.5, tc71$cell_line_cond)
+unique(tc71$wsnn_res.0.5)
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_tc71_cond_barplot_clusters.pdf", width = 5, height = 5)
+ggplot(df, aes(fill = Var2, y=Freq, x=Var1)) + 
+  geom_bar(stat = "identity",  position = "fill")+scale_fill_manual(values = cell_line_cond_cols)+theme_classic()+RotatedAxis()+NoGrid()
+dev.off()
+
+VlnPlot(tc71, features = "K2", group.by = "wsnn_res.0.5", pt.size =0) +
+  scale_fill_manual(values = c("1"="#df76a4","2"="#5ca867","3"="#336eae","4"="#ea9a50", "5"="#d0493d","6"="#7b5fa2","7"="#88c7c0","8"= "#4c9096"))
+
+tc71$wsnn_res.0.5<-factor(tc71$wsnn_res.0.5, levels = rev(sort(unique(tc71$wsnn_res.0.5))))
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_tc71_kmean_clusters.pdf", width = 3.5, height = 4.25)
+DotPlot(tc71, features = c("K1", "K2", "K3"), group.by = "wsnn_res.0.5")+scale_color_gradientn(colors = rna_cols)+RotatedAxis()
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_tc71_kmean_umap.pdf", width = 5, height = 4.25)
+FeaturePlot_scCustom(tc71, features = c("K1", "K2", "K3"), colors_use = rna_cols,reduction= "wnn.umap")&NoAxes()
+dev.off()
+
+tc71$wsnn_res.0.5<-factor(tc71$wsnn_res.0.5, levels = rev(sort(unique(tc71$wsnn_res.0.5))))
+
+```
+
+#Fig S4C
+```{r}
+
+mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/ews_tgfb_seurat_mo_lanes1_2_MM.rds")
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_K1_vlnplot.pdf", width = 5, height = 4.5)
+VlnPlot(mo, features = "K1", pt.size=0,  split.by = "condition", group.by="cell_line", split.plot=T, fill.by ="ident")+scale_fill_manual(values = cond_cols)+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)+stat_compare_means(method = "wilcox.test", label = "p.signif")
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_K2_vlnplot.pdf", width = 5, height = 4.5)
+VlnPlot(mo, features = "K2", pt.size=0,  split.by = "condition", group.by="cell_line", split.plot=T, fill.by ="ident")+scale_fill_manual(values = cond_cols)+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)+stat_compare_means(method = "wilcox.test", label = "p.signif")
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_K3_vlnplot.pdf", width = 5, height = 4.5)
+VlnPlot(mo, features = "K3", pt.size=0,  split.by = "condition", group.by="cell_line", split.plot=T, fill.by ="ident")+scale_fill_manual(values = cond_cols)+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)+stat_compare_means(method = "wilcox.test", label = "p.signif")
+dev.off()
+
+
+```
+
+
+
+# TFs specific to TGFB1 treated cells
+```{r}
+corr<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/tf_motif_expression_correlation_exp_wide.csv")
+tfs<-corr[corr$TFRegulator=="YES",]$MotifMatrix_name
+
+plot_tf_expression <- function(seurat_obj, group_by, features) {
+  exp_cell_line_avg <- AverageExpression(seurat_obj, assay = "RNA", group.by = group_by, return.seurat = TRUE)
+  act_mat <- exp_cell_line_avg@assays$RNA$data[features, ] %>% as.matrix()
+  act_mat <- act_mat[rowSums(act_mat) > 0, ]
+  #act_mat <- t(scale(t(act_mat)))
+  
+  Heatmap(act_mat, name = "TF_expression", col = rna_cols, row_names_gp = gpar(fontsize = 12), 
+          column_names_gp = gpar(fontsize = 16), row_names_rot = -20, column_names_rot = -90, 
+          cluster_columns = TRUE, width = 100, cluster_rows = TRUE, show_column_dend = TRUE, 
+          show_row_dend = FALSE)
+}
+
+seurat_obj<-a673
+group_by<-"wsnn_res.0.5"
+features<-tfs
+plot_tf_accessibility <- function(seurat_obj, group_by, features) {
+  mtfs<-seurat_obj@assays[["MOTIF_cisbp"]] %>% rownames()
+  exp_cell_line_avg <- AverageExpression(seurat_obj, assay = "MOTIF_cisbp", group.by = group_by, return.seurat = TRUE)
+  #rownames(exp_cell_line_avg)[rownames(exp_cell_line_avg) %in% tfs] 
+  act_mat <- exp_cell_line_avg@assays$MOTIF_cisbp$data[rownames(exp_cell_line_avg) %in% features, ] %>% as.matrix()
+  #act_mat <- act_mat[rowSums(act_mat) > 0, ]
+  #act_mat <- t(scale(t(act_mat)))
+
+  Heatmap(act_mat, name = "TF_accessibility", col = chromvar_cols, row_names_gp = gpar(fontsize = 12), 
+          column_names_gp = gpar(fontsize = 16), row_names_rot = -20, column_names_rot = -90, 
+          cluster_columns = TRUE, width = 100, cluster_rows = TRUE, show_column_dend = TRUE, 
+          show_row_dend = FALSE)
+}
+
+
+plot_correlation_heatmap <- function(seurat_obj, group_by, features) {
+  
+  exp_cell_line_avg <- AverageExpression(seurat_obj, assay = "RNA", group.by = group_by, return.seurat = TRUE)
+  rna_mat <- exp_cell_line_avg@assays$RNA$data[features, ] %>% as.matrix()
+  # act_mat <- act_mat[rowSums(act_mat) > 0, ]
+  #act_mat <- t(scale(t(act_mat)))
+  
+  mtfs<-seurat_obj@assays[["MOTIF_cisbp"]] %>% rownames()
+  exp_cell_line_avg <- AverageExpression(seurat_obj, assay = "MOTIF_cisbp", group.by = group_by, return.seurat = TRUE)
+  #rownames(exp_cell_line_avg)[rownames(exp_cell_line_avg) %in% tfs] 
+  act_mat <- exp_cell_line_avg@assays$MOTIF_cisbp$data[rownames(exp_cell_line_avg) %in% features, ] %>% as.matrix()
+  #act_mat <- act_mat[rowSums(act_mat) > 0, ]
+  #act_mat <- t(scale(t(act_mat)))
+
+  List_M<-list(rna_mat, act_mat)
+  cor<-Reduce("+",List_M)/length(List_M)
+  #cor<-t(scale(t(cor)))
+  t <-BuenColors::jdb_palette("brewer_spectra")
+  multiome_cols <- c(t[2],t[3], "#e5e6e1", t[7],t[9])
+
+  Heatmap(cor, name = "TF_corr", col = multiome_cols, row_names_gp = gpar(fontsize = 12), 
+          column_names_gp = gpar(fontsize = 16), row_names_rot = -20, column_names_rot = -90, 
+          cluster_columns = TRUE, width = 100, cluster_rows = TRUE, show_column_dend = TRUE, 
+          show_row_dend = FALSE)
+}
+```
+
+# Fig5D
+```{r}
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_a673_cor_heatmap.pdf", width = 4, height =6.5)
+plot_correlation_heatmap(a673, "wsnn_res.0.5", tfs)
+dev.off()
+```
+
+# Fig5E
+```{r}
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_chla10_cor_heatmap.pdf", width = 4, height =6.5)
+plot_correlation_heatmap(chla10, "wsnn_res.0.5", tfs)
+dev.off()
+
+```
+
+# Fig5F
+```{r}
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EW_tgfb/figs/ews_tgfb_tc71_cor_heatmap.pdf", width = 4, height =6.5)
+plot_correlation_heatmap(tc71, "wsnn_res.0.5", tfs)
+dev.off()
+
+```
+
+
+
+#spatial module expression Fig 5H
+```{r}
+setwd('/fh/fast/furlan_s/user/owalt/ewings/spatial')
+library(openxlsx)
+
+# BiocManager::install("NanoStringNCTools")
+# BiocManager::install("GeomxTools")
+# BiocManager::install("GeoMxWorkflows")
+
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(Seurat)
+library(ArchR)
+library(ComplexHeatmap)
+
+if(packageVersion("GeomxTools") < "2.1" & 
+   packageVersion("GeoMxWorkflows") >= "1.0.1"){
+    stop("GeomxTools and Workflow versions do not match. Please use the same version. 
+    This workflow is meant to be used with most current version of packages. 
+    If you are using an older version of Bioconductor please reinstall GeoMxWorkflows and use vignette(GeoMxWorkflows) instead")
+}
+
+if(packageVersion("GeomxTools") > "2.1" & 
+   packageVersion("GeoMxWorkflows") <= "1.0.1"){
+    stop("GeomxTools and Workflow versions do not match. 
+         Please use the same version, see install instructions above.")
+    
+    # to remove current package version
+        # remove.packages("GeomxTools")
+        # remove.packages("GeoMxWorkflows")
+    # see install instructions above 
+}
+rna_cols <- paletteContinuous(n=8)[c(1:3, 6:8)]
+```
+
+```{r}
+list.files()
+counts<-read.xlsx("Pilot dataAll Data human WTA.xlsx", sheet = 5)
+dim(counts)
+rownames(counts)<-counts$TargetName
+names(counts)
+mat<-counts[,2:13]
+
+colnames(mat)
+
+meta<-read.xlsx("Pilot dataAll Data human WTA.xlsx", sheet = 1)
+dim(meta)
+rownames(meta)<-colnames(mat)
+
+rdat<-read.xlsx("Pilot dataAll Data human WTA.xlsx", sheet = 2)
+rownames(rdat)<-rdat$TargetName
+
+head(meta)
+
+
+se<-SummarizedExperiment(assays = list(counts = mat), colData = meta)
+dim(se)
+
+
+```
+
+```{r}
+se$location<-"subq"
+se$location[se$ROILabel %in% 5:8]<- "tv1"
+se$location[se$ROILabel %in% 9:12]<- "tv2"
+
+#replicate figure 4D to make sure things look good
+nt5e_mat<-assays(se)$counts["NT5E",] %>% t() %>% as.data.frame()
+nt5e_mat$sample <- se$ROILabel
+
+barplot(nt5e_mat$NT5E)
+```
+
+
+try fusion regulated genes
+```{r}
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
+
+x=assays(se)$counts %>% as.matrix()
+mat<-GSVA::gsva(x, fus_kmean, method = "gsva", kcdf = "Poisson", abs.ranking = F, mx.diff=1)
+
+colnames(mat)<-se$ROILabel
+rownames(mat)<-c("k1", "k2", "k3")
+
+ht1<-Heatmap(mat, col = rna_cols, column_split = factor(se$location))
+
+ht1 %v% ht2
+```
+
+add module score
+```{r}
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
+
+seu<-CreateSeuratObject(counts = mat %>% as.sparse(), meta.data = meta)
+
+seu[["normRNA"]]<-CreateAssayObject(mat)
+
+
+DefaultAssay(seu)<-"normRNA"
+
+rownames(seu)
+
+seu<-AddModuleScore(seu, features =fus_kmean, name = "K", nbin = length(colnames(seu)))
+
+
+gene_sets[[1]] %in% rownames(seu) %>% table()
+
+gene_sets[[2]] %in% rownames(seu) %>% table()
+
+gene_sets[[3]] %in% rownames(seu) %>% table()
+
+mat<-matrix(nrow =3, ncol = length(colnames(seu)))
+rownames(mat)<-c("k1" , "k2", "k3")
+colnames(mat)<-se$ROILabel
+mat[1,]<-seu@meta.data$K1
+mat[2,]<-seu@meta.data$K2
+mat[3,]<-seu@meta.data$K3
+
+mat<- t(scale(t(mat)))
+id<-factor(se$location)
+quantile(mat, c(0.05, 0.25, 0.5, 0.75, 0.9))
+col_fun = circlize::colorRamp2(c(-1,-0.8,-0.5,0,0.5,1), rna_cols)
+
+heatmap(mat)
+
+pdf("spatial_kmean_heatmap.pdf", width =6, height =4)
+Heatmap(mat, name = "Kmean_Expression",cluster_rows = T, cluster_columns = T, show_row_dend = F,row_names_rot = 0, column_names_rot = -40, show_column_names = T, column_split = id, show_column_dend = F, use_raster = F, col = rna_cols, clustering_distance_columns = "pearson", clustering_distance_rows = "pearson")
+dev.off()
+```
+
+# Fig S4E, see fig 6 code for how data was generated
+```{r heatmaps cell line v cell line}
+fit<-py$fit
+fitW<-fit[rowSums(fit)>0.3,]
+
+# fit_cl<-read.table(file.path(RES_DIR, "cl_to_cl_fit.mtx"), header = T, row.names = T)
+
+colData(dds)$type<-colData(dds)$Group
+colData(dds)$type[colData(dds)$Group != "Primary"]<-"cell_line"
+
+cl_dds<-dds[,colData(dds)$type == "cell_line"]
+
+cl_dds<-cl_dds[,colData(cl_dds)$Group %in% mo$cell_line]
+table(cl_dds$sample, cl_dds$Group)
+fit_cl<-fitW[,colnames(cl_dds)]
+colnames(fit_cl)<-make.unique(cl_dds$Group)
+cl_meta<-colData(cl_dds)
+
+#write.table(fit_cl , file.path(RES_DIR, "cl_to_cl_fit.mtx"), col.names = T, row.names= T)
+
+annotation_col=data.frame(subtype=colnames(fit_cl), row.names=colnames(fit_cl))
+table(cl_meta$Group)
+cols = list(subtype = c("A673"="#9893DA", "A673.1"="#9893DA","CHLA9" = "#ebeb78", "RDES" = "#b8e3ac", "RDES.1" = "#b8e3ac","TC32" = "#810e44", "TC32.1" = "#810e44","TC71" = "#0b6e4f", "SKNMC" ="#00B0E0" ))
+
+pdf(file.path(FIG_DIR, "cl_to_cl_deconv.pdf"), width = 7, height = 5)
+pheatmap(fit_cl[,c(2,4,7,1,5,8,9,3,6)], color = viridis(100), border_color =NULL, annotation_col = annotation_col, annotation_colors = cols, cluster_rows = F, cluster_cols = F, name = "Similarity Score", main= "Bulk RNAseq EWS Cell Line Deconvelution with scRNAseq")
+dev.off()
+```
+
+```{r heatmaps cell line v cell line}
+Heatmap(fit_cl)
+
+cl<-rownames(fit_cl)
+names(cl)<-rownames(fit_cl)
+ha<-rowAnnotation(cell_line = cl[c("SKNMC", "A673", "CHLA9", "PDX305", "TC32", "A4573", "CHLA10", "TC71", "RDES", "Intercept")], col = list(cell_line = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC", "Intercept" = "gray" )))
+
+cl<-colnames(fit_cl)
+names(cl)<-colnames(fit_cl)
+ca<-columnAnnotation(cell_line = cl[c("SKNMC", "A673", "A673.1", "CHLA9", "TC32","TC32.1", "TC71", "RDES", "RDES.1")], col = list(cell_line = c("A673"="#272E6A", "A673.1"="#272E6A","CHLA9" = "#208A42", "RDES" = "#FEE500", "RDES.1" = "#FEE500","TC32" = "#3BBCA8", "TC32.1" = "#3BBCA8","TC71" = "#E6C2DC", "SKNMC" ="#8A9FD1" ) ))
+
+Heatmap(fit_cl[c("SKNMC", "A673", "CHLA9", "PDX305", "TC32", "A4573", "CHLA10", "TC71", "RDES", "Intercept"),c("SKNMC", "A673", "A673.1", "CHLA9", "TC32","TC32.1", "TC71", "RDES", "RDES.1")], cluster_rows = F,  cluster_columns = F, col = viridis(100), left_annotation = ha, top_annotation = ca)
+
+```
+
+
+# Fig S4F
+```{r}
+sfit<-read.table("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/res/subgroup_primary_tumor_fit.mtx", header =T)
+
+
+colData(dds)$type<-colData(dds)$Group
+colData(dds)$type[colData(dds)$Group != "Primary"]<-"cell_line"
+
+sub_dds<-dds[,colData(dds)$Group == "Primary"]
+
+fit_subgroup<-sfit[,colnames(sub_dds)]
+p_meta<-colData(sub_dds)
+
+#write.matrix(fit_subgroup , file.path(RES_DIR, "subgroup_primary_tumor_fit.mtx"))
+
+rownames(fit_subgroup)<-c("k2", "k1", "k3", "intercept")
+
+
+bulk<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/rds/bulkRNA_seurat.rds")
+dds<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/rds/bulkRNA_dds.rds")
+
+
+colnames(fit_subgroup)
+colnames(bulk)
+rownames(fit_subgroup)
+
+bulk$group1_sig<-fit_subgroup["k1",] %>% unlist()
+bulk$group2_sig<-fit_subgroup["k2",]%>% unlist()
+bulk$group3_sig<-fit_subgroup["k3",]%>% unlist()
+
+library(ArchR)
+library(msigdbr)
+library(Seurat)
+library(scCustomize)
+
+rna_cols<-paletteContinuous(n=8)[c(1:3, 6:8)]
+
+#get gene ontology biological process collection
+msig<-msigdbr(subcategory = "GO:BP")
+#find term for extracellular matrix
+msig$gs_name[grep("REGULATION_OF_CELLULAR_RESPONSE_TO",msig$gs_name)] %>% unique()
+
+#get tgfb gene list
+tgfb<-msig[msig$gs_name == "GOBP_REGULATION_OF_CELLULAR_RESPONSE_TO_TRANSFORMING_GROWTH_FACTOR_BETA_STIMULUS",]$gene_symbol
+
+bulk<-AddModuleScore(bulk, features = list(tgfb), name = "tgfb")
+library(ggpubr)
+
+
+bulk@meta.data %>% names()
+
+bulk$group2_high <- bulk$group2_sig > (mean(bulk$group2_sig) + sd(bulk$group2_sig))
+p<-ggplot(bulk@meta.data, aes(x = group2_sig)) +
+  geom_density(fill = "blue", alpha = 0.5) + 
+  theme_bw() +
+  NoGrid()+
+  geom_vline(xintercept = mean(bulk$group2_sig) + sd(bulk$group2_sig), col = "black")
+
+q<-ggplot(bulk@meta.data, aes(x = group2_high, y = tgfb1, fill = group2_high)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("cornflowerblue", "#FF4500")) +
+  geom_jitter(width = 0.2) +
+  theme_bw() +
+  ylim(-2000, 5000) +
+  NoGrid()+
+  labs(x = "Group 2 High", y = "TGFB1 Expression")+
+  stat_compare_means(method = "wilcox.test") 
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/figs/tgfb_expression.pdf", width = 4, height = 5)
+q
+dev.off()
+
+```
+
+
+# Fig S4G
+```{r}
+library(GSVA)
+library(dplyr)
+library(msigdbr)
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+se<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/tumorinvasion_MA/tumorinvasion_seurat.rds")
+
+se<-se[,!is.na(se$Invading.cells.vs..core) & se$"Include.or.exclude.(proven.EWS::ETS+)" == "include"]
+
+obj<-UpdateSeuratObject(se)
+
+obj@assays$RNA@layers$data<-NULL
+
+obj<-NormalizeData(obj)
+
+obj<-AddModuleScore(obj, features = kmean_probes, name = "k")
+
+df<-obj@meta.data
+
+names(df)
+
+bxp <- ggboxplot(
+  df, x = "Invading.cells.vs..core", y = "k1", 
+  ylab = "Weight", xlab = "Groups", add = "jitter"
+  )+stat_compare_means(method = "wilcox")+ggtitle(label="k1 probes")
+bxp
+ 
+
+bxp <- ggboxplot(
+  df, x = "Invading.cells.vs..core", y = "k2", 
+  ylab = "Weight", xlab = "Groups", add = "jitter"
+  )+stat_compare_means(method = "wilcox")+ggtitle(label="k2 probes")
+bxp
+
+
+bxp <- ggboxplot(
+  df, x = "Invading.cells.vs..core", y = "k3", 
+  ylab = "Weight", xlab = "Groups", add = "jitter"
+  )+stat_compare_means(method = "wilcox")+ggtitle(label="k3 probes")
+bxp
+```

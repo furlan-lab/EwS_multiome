@@ -1,0 +1,367 @@
+
+
+```{r, warning=FALSE, message=FALSE, warning=FALSE, echo=F}
+rm(list=ls())
+ROOT_DIR<-"/fh/fast/furlan_s/user/owaltner/sj"
+DATA_DIR <- file.path(ROOT_DIR, "data")      # SPECIFY HERE
+RES_DIR  <- file.path(ROOT_DIR,  "res")     # SPECIFY HERE
+RMD_DIR  <- file.path(ROOT_DIR,"rmd")     # SPECIFY HERE
+CDS_DIR <- file.path(ROOT_DIR,   "cds")
+FIG_DIR <- file.path(ROOT_DIR,  "figs")
+
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(Seurat)
+  #library(m3addon)
+  library(dplyr)
+  library(Matrix)
+  library(reticulate)
+  library(ggplot2)
+  library(pals)
+  library(RColorBrewer)
+  library(Seurat)
+  library(ComplexHeatmap)
+  library(ArchR)
+  library(parallel)
+  library(glmnet)
+  library(ggplot2)
+  library(BuenColors)
+  library(cowplot)
+  library(foreach)
+  library(doMC)
+  library(stringr)
+  library(viridis)
+  library(openxlsx)
+  library(TCGAbiolinks)
+  library(ComplexHeatmap)
+  library(GenomicRanges)
+  library(parallel)
+  library(doMC)
+  library(glmnet)
+  library(pbapply)
+  library(pbmcapply)
+  library(ggplot2)
+  library(cowplot)
+  library(reshape2)
+  library(gridExtra)
+  library(edgeR)
+  library(biomaRt)
+  library(Matrix)
+  library(scCustomize)
+  library(clusterProfiler)
+  library(survival)
+  library(lubridate)
+  library(ggsurvfit)
+  library(gtsummary)
+  library(tidycmprsk)
+  library(condsurv)
+  library(SummarizedExperiment)
+  library(Seurat)
+  library(pd.huex.1.0.st.v2)
+  library(huex10sttranscriptcluster.db)
+  library(affycoretools)
+  library(ggpubr)
+  library(ComplexHeatmap)
+})
+set.seed(1234)
+
+library(future)
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+
+library(RcppArrayFire)
+library(viewmaster)
+```
+
+# make object
+```{r}
+files<-list.files(file.path(ROOT_DIR, "cellbender_filtered"))
+paths<-paste0(ROOT_DIR,"/cellbender_filtered/" ,files[1:7])
+
+# Load h5 files
+sj_list <- lapply(paths, function(x){Read10X_h5(x)})
+
+samps<-basename(files[1:7])
+
+names(sj_list)<-samps
+
+# Initialize the Seurat object with the cellbender normalized data.
+seus<-lapply(1:length(samps), function(i){
+  seu<-CreateSeuratObject(
+    counts = sj_list[[i]])
+  seu$dataset<-samps[i]
+  seu
+})
+
+sj <- merge(
+  x = seus[[1]],
+  y = seus[2:length(seus)],
+  add.cell.ids = samps
+)
+```
+
+```{r}
+DefaultAssay(sj) <- "RNA"
+sj[["percent.mt"]] <- PercentageFeatureSet(sj, pattern = "^MT-")
+sj$log_RNA<-log10(sj$nCount_RNA)
+
+```
+
+```{r RNA/ATAC QC}
+VlnPlot(sj, features =  c("nCount_RNA" ,"percent.mt"), pt.size = 0, ncol = 3, log=T, group.by="dataset")
+```
+
+```{r RNA/ATAC QC}
+#remove one run that's really poor quality
+sj<-sj[,sj$dataset != samps[3]] #SJEWS049193_D2
+
+sub<-sj[,sj$percent.mt < 15]
+sub<-sub[,sub$log_RNA >3 &  sub$log_RNA <5.25]
+
+VlnPlot(sub, features =  c("log_RNA" ,"percent.mt"), pt.size = 0, ncol = 3, log=T, group.by="dataset", raster =F)   
+
+pdf("~/fig/plot.pdf", width = "9", height = )
+VlnPlot(sub, features =  c("log_RNA" ,"percent.mt"), pt.size = 0, ncol = 3, log=T, group.by="dataset", raster =F)  
+dev.off()
+```
+
+# normalize data
+```{r}
+sj <- NormalizeData(sub)
+sj <- FindVariableFeatures(sj, selection.method = "vst", nfeatures = 2000)
+sj <- ScaleData(sj, features = VariableFeatures(sj))
+
+#reduce dims
+sj <- SCTransform(sj, vars.to.regress = "percent.mt")
+sj <- RunPCA(sj, features = VariableFeatures(sj))
+ElbowPlot(sj, ndims = 30)
+sj<-RunUMAP(sj, dims = 1:15, verbose = T, reduction.name = "SCT_UMAP") 
+DimPlot(sj,  group.by ="dataset", label=T, reduction = "SCT_UMAP")+ggtitle("SCT UMAP")
+library(harmony)
+sj<- RunHarmony(
+  object = sj,
+  group.by.vars = 'dataset',
+  reduction = 'pca',
+  assay.use = 'SCT',
+  project.dim = FALSE
+)
+
+sj <- RunUMAP(sj, dims = 1:15, reduction = 'harmony')
+DimPlot(sj, group.by = "dataset", label=T, reduction = "umap")+ggtitle("Harmony integration")
+
+FeaturePlot(sj, features= c("CD99",  "NR0B1", "NKX2-2", "PTPRC", "CD34", "ENG","SFTPB","ALPL", "COL1A1", "IBSP"), reduction = "umap", max.cutoff = "q99", order = T)
+```
+
+```{r}
+aynaud<-read.delim("/fh/fast/furlan_s/user/owalt/ewings/multiome/EW4/ICEWS_genes.txt")
+DefaultAssay(sj)<-"SCT"
+sj<-AddModuleScore(sj, features =fus_kmean, name = "K")
+sj<-AddModuleScore(sj, features = list(aynaud$Gene), name = "IC_EWS")
+
+FeaturePlot_scCustom(sj,features = "IC_EWS1",reduction = "umap")&NoAxes()
+```
+
+# add metadata
+```{r}
+meta<-read.csv("~/sj/20220706_EWS_metadata.csv")
+
+sj$id<-sapply(sj$dataset, function(x){
+  t<-strsplit(x, "_")
+  data<-paste0(t[[1]][1], "_",t[[1]][2])
+  data
+})
+
+sj$sample<-sj$id
+sj$sample[sj$id %in% c("SJEWS001321_D2", "SJEWS063829_D1")]<-"primary"
+sj$sample[!sj$id %in% c("SJEWS001321_D2", "SJEWS063829_D1")]<-"metastasis"
+table(sj$sample)
+
+DimPlot(sj, group.by = "sample", reduction = "umap")
+
+sj$sample_site<-sj$id
+i<-levels(factor(sj$id))[1]
+for(i in levels(factor(sj$id))){
+  sj$sample_site[sj$id == i]<-meta[meta$SJID == i,]$Sample.Site
+}
+DimPlot(sj, group.by = "sample_site", reduction = "umap")
+
+sj$primary_site<-sj$id
+i<-levels(factor(sj$id))[1]
+for(i in levels(factor(sj$id))){
+  sj$primary_site[sj$id == i]<-meta[meta$SJID == i,]$Primary.Site
+}
+
+DimPlot(sj, group.by = "primary_site", reduction = "umap")
+
+tum$tumor<-tum$id
+tum$tumor[tum$id == "SJEWS001321_D2"]<- "tumor.1"
+tum$tumor[tum$id == "SJEWS049193_D1"]<- "tumor.2"
+tum$tumor[tum$id == "SJEWS063826_D1"]<- "tumor.3"
+tum$tumor[tum$id == "SJEWS063829_D1"]<- "tumor.4"
+tum$tumor[tum$id == "SJEWS063834_A1"]<- "tumor.5A"
+tum$tumor[tum$id == "SJEWS063834_A2"]<- "tumor.5B"
+
+```
+
+```{r}
+tum$subgroup_tum<-tum$tumor
+tum$subgroup_tum[tum$tumor=="tumor.1" & tum$log_cell_type == "group.1"]<-"tum1_g1"
+
+for(x in levels(factor(tum$tumor))){
+  for(i in levels(factor(tum$log_cell_type))){
+    tum$subgroup_tum[tum$tumor==x & tum$log_cell_type == i]<-paste0(x, "_" ,i)
+  }
+}
+tum$subgroup_tum
+```
+
+
+#ID cell types
+```{r}
+sj<-FindNeighbors(sj, reduction = "umap", dims = 1:2)
+sj<-FindClusters(sj, resolution = 0.025)
+Idents(sj)<-"seurat_clusters"
+markers<-FindAllMarkers(sj, only.pos = T)
+
+top_n<- markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(!str_detect(gene, "^RPL")) %>%
+  dplyr::filter(!str_detect(gene, "^RPS")) %>%
+  dplyr::filter(!str_detect(gene, "^MT")) %>%
+  slice_max(n = 10, order_by = avg_log2FC) 
+DoHeatmap(sj, features = top_n$gene)
+
+q<-DimPlot(sj, reduction = "umap")
+```
+
+```{r}
+DefaultAssay(sj)<-"RNA"
+FeaturePlot_scCustom(sj, features = c("ALPL", "COL1A1", "IBSP"), reduction = "umap", order =T, colors_use = c("gray90",  "#04578f", "#801b1b"))#osteoblasts cluster 4
+FeaturePlot_scCustom(sj, features = c("PLVAP", "COL4A1", "ENG"), reduction = "umap", order =T,  colors_use = c("gray90",  "#04578f", "#801b1b"))#blood vessel endothelium cluster 3
+FeaturePlot_scCustom(sj, features = c("PTPRC"), reduction = "umap",order =T,  colors_use = c("gray90",  "#04578f", "#801b1b"))#immune cells 5
+FeaturePlot_scCustom(sj, features = c("SFTPB"), reduction = "umap", order =T,  colors_use = c("gray90",  "#04578f", "#801b1b"))#lung tissue 6
+FeaturePlot_scCustom(sj, features = c("CD99", "NKX2-2", "HOXD13", "NR0B1"), reduction = "umap", order =T,  colors_use = c("gray90",  "#04578f", "#801b1b"))#tumor markers 0,1,2
+```
+
+```{r}
+p+q
+```
+
+```{r}
+sj$cell_type<-as.character(sj$seurat_clusters)
+sj$cell_type[sj$seurat_clusters %in% c(0,1,2)]<-"tumor"
+# sj$cell_type[sj$seurat_clusters %in% c(5)]<-"smooth muscle"
+sj$cell_type[sj$seurat_clusters %in% c(3)]<-"blood_vessel_endothelium"
+sj$cell_type[sj$seurat_clusters %in% c(4)]<-"osteoblasts/chondrocytes"
+sj$cell_type[sj$seurat_clusters %in% c(5)]<-"immune_cells"
+sj$cell_type[sj$seurat_clusters %in% c(6)]<-"lung_tissue"
+
+DimPlot(sj, group.by = "cell_type", reduction = "umap")
+```
+
+# make monocle object
+```{r}
+cds<-seurat_to_monocle3(sj, seu_rd= "umap")
+plot_cells(cds, color_cells_by = "cell_type", label_cell_groups = F, cell_size = 0.75)+scale_color_manual(values=ArchR::paletteDiscrete(values = levels(factor(sj$cell_type)), set = "grove"))+NoAxes()
+plot_cells(cds, color_cells_by = "Sample", label_cell_groups = F, cell_size = 0.5)+scale_color_manual(values=sfc(n=20, scramble = F))+NoAxes()
+sj$log_RNA<-log10(sj$nCount_RNA)
+VlnPlot(sj, features = "log_RNA", group.by = "Sample", cols =sfc(n=20, scramble = F), pt.size = 0)
+
+plot_cells(cds, genes = "MKI67", label_cell_groups = F, cell_size = 0.75, scale_to_range = F)+scale_color_gradientn(colors=c("gray90",  "#04578f", "#801b1b"))+NoAxes()
+
+
+tum<-sj[,sj$cell_type == "tumor"]
+set.seed(1234)
+tum <- NormalizeData(tum, normalization.method = "LogNormalize", scale.factor = 10000)
+tum <- FindVariableFeatures(tum, selection.method = "vst", nfeatures = 2000)
+tum <- ScaleData(tum, features = VariableFeatures(tum))
+
+#reduce dims
+tum <- SCTransform(tum, vars.to.regress = c("log_RNA"))
+tum <- RunPCA(tum, features = VariableFeatures(tum))
+ElbowPlot(tum, ndims = 30)
+tum<-RunUMAP(tum, dims = 1:25, verbose = T, reduction.name = "SCT_UMAP") 
+tum<-FindNeighbors(tum)
+tum<-FindClusters(tum, resolution = 0.6)
+
+DimPlot(tum)
+
+VlnPlot(tum, features = "log_RNA", group.by = "tumor", pt.size =0, cols = c( brewer.spectral(n=10)[c(8,3,5,10)],brewer.paired(n=9)[5:6]))
+DimPlot(tum, group.by = "dataset", label=T, reduction = "SCT_UMAP")
+
+```
+
+# Save object
+```{r}
+saveRDS(sj, file.path("~/sj/cds", "sj_cellbender_filtered.rds"))
+saveRDS(tum, file.path("~/sj/cds", "tumor_cellbender_filtered.rds"))
+```
+
+# PDX object
+
+# Mak PDX object
+```{r}
+samps<- c("PDX_184", "PDX_352", "PDX_856","PDX_861", "PDX_1058")
+
+seus<-lapply(1:length(samps), function(i){
+  files<-file.path(DATA_DIR, "ddata/GSE130024_RAW", samps[i])
+  raw<-Read10X(files)
+  seu<-CreateSeuratObject(raw)
+  seu$dataset<- samps[i]
+  seu
+})
+
+pdx <- merge(
+  x = seus[[1]],
+  y = seus[2:length(seus)],
+  add.cell.ids = samps
+)
+
+pdx@assays[["RNA"]]@data@Dimnames[[1]]<-gsub("GRCh38-", "",pdx@assays[["RNA"]]@data@Dimnames[[1]])
+pdx@assays[["RNA"]]@counts@Dimnames[[1]]<-gsub("GRCh38-", "",pdx@assays[["RNA"]]@counts@Dimnames[[1]])
+rownames(pdx[,pdx$dataset == "PDX_1058"])
+
+
+DefaultAssay(pdx) <- "RNA"
+pdx[["percent.mt"]] <- PercentageFeatureSet(pdx, pattern = "^MT-")
+pdx$log_RNA<-log10(pdx$nCount_RNA)
+
+```
+
+```{r RNA QC}
+VlnPlot(pdx, features =  c("nCount_RNA", "percent.mt"), pt.size = 0, ncol = 3, log=T, group.by="dataset")
+VlnPlot(pdx, features =  c("percent.mt"), pt.size = 0, group.by="dataset", y.max= 50)
+VlnPlot(pdx, features =  c("log_RNA"), pt.size = 0, group.by="dataset")
+
+# pdx<-pdx[,pdx$dataset != "PDX_1058"]
+```
+
+```{r RNA QC}
+pdx<- subset(
+  x =pdx,
+  subset = 
+    percent.mt <= 15 &
+    log_RNA <= 4.5 &
+    log_RNA >= 3 )
+
+pdx <- SCTransform(pdx, vars.to.regress = "percent.mt", verbose = FALSE)
+pdx <- RunPCA(pdx, verbose = FALSE)
+pdx <- RunUMAP(pdx, dims = 1:30, verbose = FALSE)
+
+pdx <- FindNeighbors(pdx, dims = 1:30, verbose = FALSE)
+pdx <- FindClusters(pdx, verbose = FALSE)
+DimPlot(pdx, label = TRUE) + NoLegend()
+```
+
+# add PDX metadata
+```{r}
+pdx$localization<-pdx$dataset
+pdx$localization[pdx$dataset == "PDX_184"]<-"localized (diagnosis)"
+pdx$localization[pdx$dataset == "PDX_352"]<-"localized (diagnosis)"
+pdx$localization[pdx$dataset == "PDX_861"]<-"metastatic (diagnosis)"
+pdx$localization[pdx$dataset == "PDX_856"]<-"localized (relapse)"
+pdx$localization[pdx$dataset == "PDX_1058"]<-"metastatic (relapse)"
+
+saveRDS(pdx, file.path("~/sj/cds", "pdx_samples.rds"))
+
+```

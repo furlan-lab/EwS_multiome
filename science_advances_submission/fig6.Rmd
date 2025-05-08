@@ -1,0 +1,730 @@
+---
+title: "Figure 5: Intratumoral heterogenity in patient tumors"
+author: OW
+output: html_myeebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning=FALSE, message=FALSE, warning=FALSE, echo=F}
+rm(list=ls())
+ROOT_DIR<-"/fh/fast/furlan_s/user/owaltner/sj"
+DATA_DIR <- file.path(ROOT_DIR, "data")      # SPECIFY HERE
+RES_DIR  <- file.path(ROOT_DIR,  "res")     # SPECIFY HERE
+RMD_DIR  <- file.path(ROOT_DIR,"rmd")     # SPECIFY HERE
+CDS_DIR <- file.path(ROOT_DIR,   "cds")
+FIG_DIR <- file.path(ROOT_DIR,  "figs")
+
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(Seurat)
+  #library(m3addon)
+  library(dplyr)
+  library(Matrix)
+  library(reticulate)
+  library(ggplot2)
+  library(pals)
+  library(RColorBrewer)
+  library(Seurat)
+  library(ComplexHeatmap)
+  library(ArchR)
+  library(parallel)
+  library(glmnet)
+  library(ggplot2)
+  library(BuenColors)
+  library(cowplot)
+  library(foreach)
+  library(doMC)
+  library(stringr)
+  library(viridis)
+  library(openxlsx)
+  library(TCGAbiolinks)
+  library(ComplexHeatmap)
+  library(GenomicRanges)
+  library(parallel)
+  library(doMC)
+  library(glmnet)
+  library(pbapply)
+  library(pbmcapply)
+  library(ggplot2)
+  library(cowplot)
+  library(reshape2)
+  library(gridExtra)
+  library(edgeR)
+  library(biomaRt)
+  library(Matrix)
+  library(scCustomize)
+  library(clusterProfiler)
+  library(survival)
+  library(lubridate)
+  library(ggsurvfit)
+  library(gtsummary)
+  library(tidycmprsk)
+  library(condsurv)
+  library(SummarizedExperiment)
+  library(Seurat)
+  library(pd.huex.1.0.st.v2)
+  library(huex10sttranscriptcluster.db)
+  library(affycoretools)
+  library(ggpubr)
+  library(ComplexHeatmap)
+})
+set.seed(1234)
+
+library(future)
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+
+library(RcppArrayFire)
+library(viewmaster)
+```
+
+```{r, load colors and object}
+tum<-readRDS(file.path(ROOT_DIR, "cds/tumor_cellbender_filtered.rds"))#all cells post qc
+cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/092921_cite.rds")
+pdx<- readRDS( file.path(CDS_DIR, "pdx_samples.rds"))
+
+tumor_cols<-c("#81c1a8", "#455d98", "#7253a3","#e07540","#e7a79c","#cf3732")
+tum$tumor<-factor(tum$tumor, levels = c("tumor.1", "tumor.4", "tumor.2","tumor.3","tumor.5A", "tumor.5B"))
+names(tumor_cols)<-levels(factor(tum$tumor))
+
+rna_cols <- paletteContinuous(n=8)[c(1:3, 6:8)]
+
+cite_cols= c("A4573" = "#9893DA","A673"="#ebeb78", "CHLA10" ="#fa9f42","CHLA9"="#810e44","PDX305"="#d94745","RDES"="#00B0E0","SKNMC"="#3e5e8e","TC32"="#0b6e4f","TC71" ="#b8e3ac")
+pdx_cols<-paletteDiscrete(values = levels(factor(pdx$dataset)), set = "calm")
+```
+
+# PDX Dim Plot, Fig 6A
+```{r}
+DimPlot(pdx, reduction = "sct_umap", group.by = "dataset")
+cds<-seurat_to_monocle3(pdx, seu_rd = "sct_umap")
+pdf("~/pdx/figs/dataset_umap.pdf", width = 5, height = 4)
+plot_cells(cds, color_cells_by = "dataset", label_cell_groups = F)+scale_color_manual(values = pal_discrete(values = levels(factor(cds$dataset)), set = "calm", reverse = T))&NoAxes()
+dev.off()
+```
+
+# PDX kmean analysis, Fig 6A
+```{r fusion regulated kmean genes}
+fus_kmean<-readRDS("~/m3/res/kd_kmean_genes.rds")
+pdx<-AddModuleScore(pdx, features = fus_kmean, name = "k")
+
+pdf("~/sj/figs/pdx_kmean_umap.pdf", width = 7, height = 7)
+FeaturePlot_scCustom(pdx,features = c("K1", "K2", "K3"), colors_use = rna_cols , reduction = "SCT_UMAP")&NoAxes()
+dev.off()
+```
+
+# tumor only patient samples UMAP, Fig 6B
+```{r}
+cds<-seurat_to_monocle3(tum, seu_rd= "SCT_UMAP")
+plot_cells(cds, color_cells_by = "dataset", label_cell_groups = F, cell_size = 0.75)+scale_color_manual(values=c( brewer.spectral(n=10)[c(8,3,5,10)],brewer.paired(n=9)[5:6]))+NoAxes()
+
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
+DefaultAssay(tum)<-"SCT"
+tum<-AddModuleScore(tum, features =fus_kmean, name = "K")
+
+pdf("~/sj/figs/kmean_umap.pdf", width = 7, height = 7)
+FeaturePlot_scCustom(tum,features = c("K1", "K2", "K3"), colors_use = rna_cols , reduction = "SCT_UMAP")&NoAxes()
+dev.off()
+```
+
+# Load bulk data
+```{r load objects}
+
+bulk<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/rds/bulkRNA_seurat.rds")
+dds<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/rds/bulkRNA_dds.rds")
+
+```
+
+# read/ prepare objects
+```{r prepare cite object}
+mo<-readRDS("~/m2/m2.rds")
+cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/210330_cds_filtering.RDS")
+```
+
+```{r prepare cite object}
+cite$cell_line<-clusters(cite)
+cite$cell_line<-as.character(cite$cell_line)
+cite$cell_line[which(clusters(cite) == 1)]<-"A673"
+cite$cell_line[which(clusters(cite) == 2)]<-"PDX305"
+cite$cell_line[which(clusters(cite) == 3)]<-"CHLA10"
+cite$cell_line[which(clusters(cite) == 4)]<-"TC71"
+cite$cell_line[which(clusters(cite) == 5)]<-"TC32"
+cite$cell_line[which(clusters(cite) == 6)]<-"SKNMC"
+cite$cell_line[which(clusters(cite) == 7)]<-"CHLA9"
+cite$cell_line[which(clusters(cite) == 8)]<-"A4573"
+cite$cell_line[which(clusters(cite) == 9)]<-"RDES"
+
+
+cite$subgroup<-clusters(cite)
+cite$subgroup<-as.character(cite$subgroup)
+cite$subgroup[which(clusters(cite) == 1)]<-"k1"
+cite$subgroup[which(clusters(cite) == 2)]<-"k2"
+cite$subgroup[which(clusters(cite) == 3)]<-"k2"
+cite$subgroup[which(clusters(cite) == 4)]<-"k3"
+cite$subgroup[which(clusters(cite) == 5)]<-"k2"
+cite$subgroup[which(clusters(cite) == 6)]<-"k3"
+cite$subgroup[which(clusters(cite) == 7)]<-"k2"
+cite$subgroup[which(clusters(cite) == 8)]<-"k3"
+cite$subgroup[which(clusters(cite) == 9)]<-"k3"
+
+exprs <- monocle3::exprs(cite)
+meta <- colData(cite) %>% as.data.frame()
+embedding <- cite@int_colData@listData[["reducedDims"]]@listData[["UMAP"]] %>% as.data.frame()
+feature_meta <-  rowData(cite) %>% as.data.frame()
+names(feature_meta)
+```
+
+```{r set up python enrionment}
+Sys.setenv(RETICULATE_PYTHON = "~/.conda/envs/py3/bin/python3")
+library("SeuratDisk")
+library("Seurat")
+library("reticulate")
+use_python("~/.conda/envs/py3/bin/python3")
+use_condaenv("~/.conda/envs/py3")
+py_config()
+```
+
+#python libraries
+```{python }
+#############
+# Libraries #
+#############
+import os
+import datetime
+import argparse
+#Suppress lots of mecitery warning
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+from os.path import expanduser as eu
+from os import path
+from math import ceil
+import tensorflow as tf
+import scanpy as sc
+import pandas as pd
+import numpy as np
+from scipy.stats import poisson 
+from scipy.special import loggamma
+from scipy.io import mmread
+import scipy.sparse as sparse
+#from pandas.core.algorithms import match
+import warnings
+from matplotlib.pyplot import rc_context
+tf.compat.v1.disable_eager_execution() 
+```
+
+# make scanpy objects
+```{python 9 CL h5ad}
+adata= sc.AnnData(X = r.exprs.T, obs = r.meta, var = r.feature_meta)
+adata.obsm['X_umap'] = r.embedding
+adata.raw = adata # raw counts
+# adata.write('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/snRNA_EwS.h5ad')
+# adata.write('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/scRNA_EwS.h5ad')
+```
+
+# run cell signal analysis
+```{python}
+
+################
+# modify These #
+################
+
+os.chdir("/home/owaltner/dev/cellSignalAnalysis")
+adata = sc.read_h5ad('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/scEWS.h5ad')
+single_cell_ref = adata
+single_cell_ref_column = "subgroup"
+bulk_count_data = "/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/bulk_counts_normalized.csv"
+bulk_meta_data = "/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/bulk_meta.csv"
+gene_weights = "/home/owaltner/dev/cellSignalAnalysis/geneWeights.tsv"
+
+ds = range(0,126)
+drop_zero_sig_genes=False
+init_log_exposure=-10
+insert_size=500
+l1_lambda=0
+l2_lambda=0
+learn_rate=0.01
+log_likelihood_tolerance=1e-06
+max_it=10000000.0
+no_collapse_ref=False
+poll_interval=100
+refine_sigs=None
+sparsity_tolerance=0.0001
+```
+
+```{python}
+####################
+# Load scReference #
+####################
+sc.pl.umap(adata, color = single_cell_ref_column)
+```
+
+```{python step 1}
+##################
+# Load bulk data #
+##################
+toc = pd.read_csv(bulk_count_data, index_col=0)
+tol=toc['size']
+toc = toc.drop(columns='size')
+meta_bulk = pd.read_csv(bulk_meta_data, index_col=0)
+bulkGenes = toc.index
+toc = toc.iloc[:,ds]
+meta_bulk = meta_bulk.iloc[ds,:]
+n=toc.shape[1]
+tol = pd.concat([tol] * n, axis=1, ignore_index=True)
+toc.index.name="geneName"
+tol.index.name="geneName"
+tol.columns=toc.columns
+dat = adata.raw.X.T
+cellSigs = np.asarray(adata.obs[single_cell_ref_column])
+tmp = []
+scSigs=[]
+for cellSig in list(set(adata.obs[single_cell_ref_column])):
+    idxs = np.where(cellSigs==cellSig)[0]
+    tgts = dat[:,idxs]
+    #Collapse across cells
+    tgts = tgts.sum(axis=1)
+    #Normalise to sum to 1 and store
+    tmp.append(tgts/tgts.sum())
+tmp = pd.DataFrame([np.squeeze(np.asarray(x)) for x in tmp],index=list(set(cellSigs)),columns=adata.var['id']).transpose()
+scSigs.append(tmp)
+refGenes = list(set.intersection(*[set(x.index.values) for x in scSigs]))
+refGenes.sort()
+nGenes = [x.shape[0] for x in scSigs]
+#nGenes = len(scSigs.index)
+if len(refGenes) < max(nGenes):
+  warnings.warn("Reference cellular signals have between %d and %d genes, with only %d in comciten.  All non-shared genes will be dropped."%(min(nGenes),max(nGenes),len(refGenes)))
+#Merge into one matrix 
+scSigs = [x.loc[refGenes] for x in scSigs]
+scSigs = pd.concat(scSigs,axis=1)
+
+################
+# Load weights #
+################
+if gene_weights is not None:
+  geneWeights = pd.read_csv(eu(gene_weights),sep='\t',index_col='geneID')
+else:
+  geneWeights = pd.DataFrame(np.ones((toc.shape[0],1)),index=toc.index,columns=['weight'])
+
+
+##################
+# Harmonise data #
+##################
+
+commonGenes = list(set.intersection(set(refGenes), set(geneWeights.index), set(bulkGenes)))
+if len(commonGenes) < max(len(bulkGenes),len(refGenes)):
+  warnings.warn("Bulk data has %d genes, reference data %d, with only %d in common.  All information relating to non-shared genes will be dropped."%(len(bulkGenes),len(refGenes),len(commonGenes)))
+#Do the more stringent thing of dropping anything zero in sigs
+if drop_zero_sig_genes:
+  print("Dropping %d genes with zero expression in any of the supplied cellular signals. %d genes remain"%(sum(scSigs.loc[commonGenes].sum(axis=1)==0),sum(scSigs.loc[commonGenes].sum(axis=1)>0)))
+  commonGenes = list(np.array(commonGenes)[(scSigs.loc[commonGenes].sum(axis=1))>0])
+geneWeights = geneWeights.loc[commonGenes]
+tol = tol.loc[commonGenes]
+scSigs = scSigs.loc[commonGenes]
+#Finalise weights
+geneWeights = geneWeights.reindex(commonGenes)
+geneWeights = geneWeights.fillna(1.0)
+scSigs = scSigs.loc[commonGenes]
+toc = toc.loc[commonGenes,]
+toc = toc.iloc[[list(toc.index.values).index(i) for i in commonGenes]]
+#Re-normalise signals?
+#scSigs = scSigs/scSigs.sum(axis=0)
+#Some useful messages
+print("Fitting %d bulk samples to %d cellular signals using %d genes"%(toc.shape[1],scSigs.shape[1],toc.shape[0]))
+print("Signals named:")
+tmp = scSigs.columns.values
+print(str(tmp))
+print("Regularising with lambda %g/%g for L1/L2 "%(l1_lambda, l2_lambda))
+```
+
+```{python step 2}
+####################
+# Define the model #
+####################
+p,n = toc.shape
+s = scSigs.shape[1]
+#########
+# Inputs
+S = tf.constant(scSigs.values.astype('float32'),name='fixed_signals')
+#Note the insert-size conversion factor to convert length of gene to expected number of fragments per molecule of mRNA from gene
+C = tf.constant((tol.values/insert_size).astype('float32'),name='mols_to_reads')
+k = tf.constant(toc.values.astype('float32'),name='obs_counts')
+w = tf.constant(geneWeights.weight.values.astype('float32'),name='gene_weights')
+#Create "Signal" that is really just the intercept term
+Si = tf.constant((np.ones((p,1))/p).astype('float32'),name='intercept_signal')
+Sp = tf.concat([S,Si],axis=1)
+############
+# Exposures
+#These are the things we actually train
+#Initialise to -10000, which converts to 0.  This value will not be changed when fitting null
+z = tf.Variable(tf.zeros([s,n])+init_log_exposure,name='exposures')
+#Define dynamic intercept
+int0 = tf.Variable(tf.zeros([1,n]),name='intercept')
+#Merge
+zz = tf.concat([z,int0],name='exposures_with_int',axis=0)
+#Positive exposures, including intercept
+E = tf.exp(zz,name='positive_exposures')
+###################
+# Predicted Counts
+#Predicted number of molecules
+q = tf.matmul(Sp,E,name='pred_mols')
+#Convert to number of reads
+y = tf.multiply(q,C,name='pred_reads')
+##########################
+# Poisson log-likelihood
+#Variable part of Poisson log-likelihood
+Dij = k*tf.math.log(y)- y
+#Constant part
+D0 = tf.math.lgamma(k+1)
+#Add gene weights and sum to get negative log-likelihood
+LL = tf.transpose(a=D0-Dij)*w
+tLL = tf.reduce_sum(input_tensor=LL,name='NLL')
+#############################
+# Define objective function
+#Count of non-zeroish co-efficients
+cCnt = tf.reduce_sum(input_tensor=tf.sigmoid(zz))
+# The final penalised, adjust NLL
+O = tLL
+############
+# Optimiser
+opt_E = tf.compat.v1.train.AdamOptimizer(learn_rate)
+
+
+############
+# Fit NULL #
+############
+print('''
+######################
+# Fitting null Model #
+######################
+''')
+#Fit null first so we can inform the regularisation
+update_op = z.assign(np.zeros([s,n])-1000)
+learners = opt_E.minimize(O,var_list=[int0],name='learn_exposures')
+#Initialise
+nullSess = tf.compat.v1.Session()
+init = tf.compat.v1.global_variables_initializer()
+nullSess.run(init)
+_ = nullSess.run(update_op)
+#Record initial values
+last = nullSess.run(O)
+lastNonZero = nullSess.run(cCnt)
+#Record the movements
+null_nll = np.zeros(int(ceil(max_it/poll_interval)))
+null_nsigs = np.zeros(int(ceil(max_it/poll_interval)))
+i=0
+while True:
+  #Take the exposure step
+  nullSess.run([learners])
+  #Every now and then, record our progress and check if we've converged
+  if i%poll_interval == 0:
+    ii = i//poll_interval
+    #Record object function and number of non-zero exposures
+    null_nll[ii] = nullSess.run(O)
+    null_nsigs[ii] = nullSess.run(cCnt)
+    #Record how much we've changed since we last checked
+    diff = (last-null_nll[ii])
+    last = null_nll[ii]
+    diffCnts = (lastNonZero - null_nsigs[ii])
+    lastNonZero = null_nsigs[ii]
+    #Calculate per-element summaries
+    sigsPerSample = lastNonZero/n
+    llPerEntry = null_nll[ii]/n/p
+    #And the average intercept
+    avgInt = np.mean(np.exp(nullSess.run(int0)))
+    #The average coverage relative to the observed
+    avgCov = np.mean(nullSess.run(y).sum(axis=0)/nullSess.run(k).sum(axis=0))
+    print("[%s] step %d, training O=%g, cnt=%g,dO=%g,dCnt=%g,nSigsAvg=%g/%d,avgNLL=%g,avgCov=%g" %(datetime.datetime.now(),i,last,lastNonZero,diff,diffCnts,sigsPerSample,s+1,llPerEntry,avgCov))
+    #Test if we should terminate
+    if diff<=0 and diff/last < log_likelihood_tolerance  and diffCnts/lastNonZero < sparsity_tolerance:
+      break
+  i = i+1
+  if i>max_it:
+    break
+```
+
+```{python step 3}
+################
+# Update model #
+################
+#Get the NULL likelihoods per samples
+sampL = nullSess.run(LL).sum(axis=1)
+#And the penalty under the assumption of uniform exposures, that total to the number of reads
+#This is the average number of molecules per sample
+mols_per_samp = (toc/tol).sum(axis=0)*insert_size
+#NOTE: This sets the scale for lambda so that for lambda=1 the sample -LL under the NULL model is equal to the imposed penalty if exposures are uniformly distributed.
+#The L1 Penalty
+#Construct the total penalty under the uniformity and avg mol assumptions.  The denominator is really s*(mols_per_samp/s)
+avg_pen = mols_per_samp
+avg_pen = sampL/avg_pen
+#And the penalty itself
+penL1 = l1_lambda*tf.reduce_sum(avg_pen.values*E)
+#The L2 penalty, does not include lambda (we don't want to penalise large exposures in intercept)
+#Under the uniformity assumption and sum to avg mol assumption, this is the total penalty
+#NOTE: The s+1 instead of s is to account for there being the unpenalized intercept in the model
+avg_pen = s*((mols_per_samp/(s+1))**2)
+avg_pen = sampL/avg_pen
+#Don't want to include the intercept so have to re-exponetiate
+penL2 = tf.exp(z)**2
+penL2 = l2_lambda*tf.reduce_sum(avg_pen.values*penL2)
+#And the penalised likelihood
+O_pen = O+penL1+penL2
+
+
+############
+# Main fit #
+############
+print('''
+######################
+# Fitting main Model #
+######################
+''')
+#Define optimisers
+toLearn = [z,int0]
+learners = opt_E.minimize(O_pen,var_list=toLearn,name='learn_exposures')
+#Initialise
+sess = tf.compat.v1.Session()
+init = tf.compat.v1.global_variables_initializer()
+sess.run(init)
+#Record initial values
+last = sess.run(O_pen)
+lastNonZero = sess.run(cCnt)
+#Record the movements
+nll = np.zeros(int(ceil(max_it/poll_interval)))
+nsigs = np.zeros(int(ceil(max_it/poll_interval)))
+i=0
+while True:
+  #Take the exposure step
+  sess.run([learners])
+  #Every now and then, record our progress and check if we've converged
+  if i%poll_interval == 0:
+    ii = i//poll_interval
+    #Record object function and number of non-zero exposures
+    nll[ii] = sess.run(O_pen)
+    nsigs[ii] = sess.run(cCnt)
+    #Record how much we've changed since we last checked
+    diff = (last-nll[ii])
+    last = nll[ii]
+    diffCnts = (lastNonZero - nsigs[ii])
+    lastNonZero = nsigs[ii]
+    #Calculate per-element summaries
+    sigsPerSample = lastNonZero/n
+    llPerEntry = nll[ii]/n/p
+    #And the average intercept
+    avgInt = np.mean(np.exp(sess.run(int0)))
+    #The average coverage relative to the observed
+    avgCov = np.mean(sess.run(y).sum(axis=0)/sess.run(k).sum(axis=0))
+    print("[%s] step %d, training O=%g, cnt=%g,dO=%g,dCnt=%g,nSigsAvg=%g/%d,avgNLL=%g,avgCov=%g" %(datetime.datetime.now(),i,last,lastNonZero,diff,diffCnts,sigsPerSample,s+1,llPerEntry,avgCov))
+    #Test if we should terminate
+    if diff<0 and diff/last < log_likelihood_tolerance  and diffCnts/lastNonZero < sparsity_tolerance:
+      break
+  i = i+1
+  if i>max_it:
+    break
+
+```
+
+```{python step 4}
+###################
+# Post processing #
+###################
+#First save the things used to fit.
+#The bulk counts
+#toc.to_csv(args.output + '_usedBulkCounts.tsv',sep='\t',index_label=False)
+#And their lengths
+#tol.to_csv(args.output + '_usedBulkGeneLengths.tsv',sep='\t',index_label=False)
+#The cellular Signals
+#scSigs.to_csv(args.output + '_usedCellularSignals.tsv',sep='\t',index_label=False)
+#And gene weights
+#geneWeights.to_csv(args.output + '_usedGeneWeights.tsv',sep='\t',index_label=False)
+#Now the things we infered
+#The exposures, plus goodness of fit metrics
+pred_E = pd.DataFrame(sess.run(E),index=list(scSigs.columns)+['Intercept'],columns=toc.columns)
+pR2 = 1-sess.run(LL).sum(axis=1)/nullSess.run(LL).sum(axis=1)
+pred_E.loc['pR2'] = pR2
+pred_E.loc['fitCount'] = sess.run(y).sum(axis=0)
+pred_E.loc['obsCount'] = sess.run(k).sum(axis=0)
+#pred_E.to_csv(args.output + '_fitExposures.tsv',sep='\t',index_label=False)
+#Full predicted table of counts
+pred_y = pd.DataFrame(sess.run(y),index=toc.index,columns=toc.columns)
+#pred_y.to_csv(args.output + '_fitCounts.tsv',sep='\t',index_label=False)
+#Full negative log-likelihood table
+pred_LL = pd.DataFrame(sess.run(LL),index=toc.columns,columns=toc.index)
+#pred_LL.to_csv(args.output + '_negativeLogLikelihoodFullFit.tsv',sep='\t',index_label=False)
+#Full negative log-likelihood table under null
+pred_nLL = pd.DataFrame(nullSess.run(LL),index=toc.columns,columns=toc.index)
+#pred_nLL.to_csv(args.output + '_negativeLogLikelihoodNullFit.tsv',sep='\t',index_label=False)
+#Stats about fitting itself
+#Main fit
+df = pd.DataFrame(np.c_[nll,nsigs],columns=['NLL','numExposures'])
+df = df.iloc[np.logical_and(nll!=0,nsigs!=0),]
+df.loc[:,'step'] = df.index*poll_interval
+df.loc[:,'fitType']='FullFit'
+fitStats = df
+#Null Fit
+df = pd.DataFrame(np.c_[null_nll,null_nsigs],columns=['NLL','numExposures'])
+df = df.iloc[np.logical_and(null_nll!=0,null_nsigs!=0),]
+df.loc[:,'step'] = df.index*poll_interval
+df.loc[:,'fitType']='NullFit'
+fitStats = pd.concat([fitStats,df])
+
+```
+#Visualize Data
+```{python visualize}
+###################
+#    Plotting     #
+###################
+def normaliseExposures(fit):
+    #Is this just the base?
+    #fit = pd.read_csv(tgt,sep='\t')
+    fit = fit[sorted(fit)]
+    #Extract the goodness of fit rows
+    gofNoms = ['pR2','fitCount','obsCount']
+    gof = fit.loc[gofNoms]
+    gof.loc['log2(countRatio)'] = np.log2(gof.loc['fitCount']/gof.loc['obsCount'])
+    exposures = fit.loc[~fit.index.isin(gofNoms)]
+    exposures = exposures/exposures.sum(0)
+    #Done
+    return {'exposures': exposures, 'gof': gof,'raw':fit.loc[~fit.index.isin(gofNoms)]}
+
+#target_meta = pd.read_csv('./bulkData/SangerProjectTARGET_ALL_phase1.txt', index_col=0, header=None)
+fit = normaliseExposures(pred_E)
+fit = fit['exposures']
+fit.columns = pd.Series(fit.columns).str.split('.', expand = True, n=1)[0].values
+adata_target = sc.AnnData(fit.T)
+#adata_target = adata_target[adata_target.obs_names.isin(target_meta.index.values)]
+vn = pd.Series(adata_target.var_names)
+adata_target.obs['sample']=adata_target.obs_names
+
+fit.to_csv('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/res/patient_subgroup_fit.csv')
+
+```
+
+
+# Fig 6D
+```{r tumor vs subgroup}
+sfit<-py$fit
+sfit<-read.table("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/res/subgroup_primary_tumor_fit.mtx", header =T)
+
+# sfitW<-sfit[rowSums(sfit)>0.3,]
+
+colData(dds)$type<-colData(dds)$Group
+colData(dds)$type[colData(dds)$Group != "Primary"]<-"cell_line"
+
+sub_dds<-dds[,colData(dds)$Group == "Primary"]
+
+fit_subgroup<-sfit[,colnames(sub_dds)]
+p_meta<-colData(sub_dds)
+
+#write.matrix(fit_subgroup , file.path(RES_DIR, "subgroup_primary_tumor_fit.mtx"))
+
+rownames(fit_subgroup)<-c("k2", "k1", "k3", "intercept")
+
+cols = list(BioProject = c(PRJNA253759="gray90", PRJNA261990="#000000"))
+
+
+bioproject<-unlist(p_meta$BioProject)
+names(bioproject)<-colnames(fit_subgroup)
+
+ca<-columnAnnotation(BioProject = bioproject, col = list(BioProject = c(PRJNA253759="#B0C4DE", PRJNA261990="#4682B4")), border = F)
+
+Heatmap(fit_subgroup[c("k1", "k2", "k3", "intercept"),], col = viridis(100),  show_column_names  = F, show_row_names = T, cluster_rows = F, top_annotation = ca)
+```
+
+
+
+# Fig 6E Patient Microarray data set
+```{r helpful functions}
+gene_list<-kmean_probes[[2]]
+name = "k2"
+strat_curve<-function(obj, gene_list, name){
+  obj<-AddModuleScore(obj, features = gene_list, name = name)
+  quants<-quantile(obj[[paste0(name,"1")]] %>% unlist(), 0.85)
+  obj$pos<-T
+  obj$pos[obj[[paste0(name,"1")]] < quants]<-F
+  counts=obj$pos %>% table() %>% data.frame()
+  
+  ntrue=counts[2,"Freq"]
+  nfalse=counts[1,"Freq"]
+  
+  cox<-coxph(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
+  pval<-cox$waldtest["pvalue"]
+
+  survfit2(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
+    ggsurvfit() +
+    labs(
+      x = "Days",
+      y = "Event free survival probability"
+    )+ylim(c(0,1))+ggtitle(label = paste0(name, " high expression / pvalue = " , round(pval, 4)))+
+    geom_text(data = data.frame(
+      pos = factor(c(TRUE, FALSE)),
+      x = c(max(obj$EFS.time..days.), max(obj$EFS.time..days.)),
+      y = c(0.8, 0.7),
+      label = c(ntrue, nfalse)
+    ), 
+    aes(x = x, y = y, label = label, color = pos), 
+    hjust = 1) 
+}
+
+
+
+# gene<-"FOSL2"
+strat_curve_gene<-function(obj, gene){
+  probes<-fdat[which(fdat$gene_short_name %in% gene), ]$id
+  if(length(probes) >1){
+    obj<-AddModuleScore(obj, features = list(probes), name = gene)
+    quant<-quantile(obj[[paste0(name,"1")]] %>% unlist(), 0.5)
+    obj$pos<-T
+    obj$pos[obj[[paste0(name,"1")]] < quant]<-F  
+  }
+  if(length(probes) == 1){
+    obj$gene<-obj@assays$RNA@counts[probes,]
+    quant<-quantile(obj$gene %>% unlist(), 0.5)
+    obj$pos<-T
+    obj$pos[obj$gene < quant]<-F  
+  }
+  cox<-coxph(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
+  pval<-cox$waldtest["pvalue"]
+  survfit2(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Event free survival probability"
+  )+ylim(c(0,1))+ggtitle(label = paste0(gene, " high expression / pvalue = " , round(pval, 4)))
+}
+```
+
+```{r}
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
+
+kmean<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/3_subgroup_links.csv")
+
+kmean<-kmean[!duplicated(kmean$gene),]
+
+fus_kmean[[1]]<-kmean[kmean$kmean == 1,]$gene
+fus_kmean[[2]]<-kmean[kmean$kmean == 2,]$gene
+fus_kmean[[3]]<-kmean[kmean$kmean == 3,]$gene
+
+
+kmean_probes<-lapply(fus_kmean, function(x){
+  probes<-fdat[fdat$gene_short_name %in% x,]$id  
+  probes[probes %in% rownames(obj)]
+})
+
+DefaultAssay(obj)<-"normRNA"
+
+pdf("../figs/k1_survival.pdf", width = 3, height = 3)
+strat_curve(obj, gene_list= list(kmean_probes[[1]]),name =  "k1")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
+dev.off()
+
+pdf("../figs/k2_survival.pdf", width = 3, height = 3)
+strat_curve(obj, gene_list= list(kmean_probes[[2]]),name =  "k2")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
+dev.off()
+
+pdf("../figs/k3_survival.pdf", width = 3, height =3)
+strat_curve(obj, gene_list= list(kmean_probes[[3]]),name =  "k3")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
+dev.off()
+
+pdf("../figs/fosl2_survival.pdf", width = 3, height =3)
+strat_curve(obj, gene_list= list(fosl2_probes[[1]]),name =  "fosl2_targets")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
+dev.off()
+```
+

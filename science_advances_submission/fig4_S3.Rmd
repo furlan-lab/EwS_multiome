@@ -1,0 +1,411 @@
+---
+title: "Intratumoral heterogeneity"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+rm(list=ls())
+#Load neccessary packages
+suppressPackageStartupMessages({
+  library(monocle3)
+  library(reticulate)
+  library(clusterProfiler)
+  library(enrichplot)
+  library(openxlsx)  
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  library(pals)
+  library(rhdf5)
+  library(pals)
+  library(Signac)
+  library(Seurat)
+  library(future)
+  library(ggrepel)
+  library(GenomicRanges)
+  library(RColorBrewer)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(parallel)
+  library(scCustomize)
+  library(org.Hs.eg.db)
+  library(SeuratObject)
+  library(msigdbr)
+  library(stringr)
+  library(tibble)
+  library(FigR)
+  library(pbmcapply)
+  library(fgsea)
+  library(viridis)
+
+})
+
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "GCC")
+
+
+library(RcppArrayFire)
+library(viewmaster)
+
+#set up parallelization and increase memory for R environment
+library(future)
+plan()
+
+plan("multisession", workers = detectCores())
+options(future.globals.maxSize = 36000000 * 1024 ^ 3) # for 50 Gb RAM
+```
+
+```{r colors }
+cell_line_cols<-c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500")
+subgroup_cols<-c("group.1"= "#9d8cbf","group.2" = "#12733c","group.3"= "#edd30c")
+
+cluster_cols<-c( "C1" = "#2d3aad",
+                 "C2" = "#01031f",
+                 "C3" = "#D51F26",
+                 "C4" = "#d64b50",
+                 "C5" = "#78181b",
+                 "C6" = "#8ed1f5",
+                 "C7" = "#739cff",
+                 "C8" = "#5e5cab",
+                 "C9" = "#abbeed",
+                 "C10" = "#8A9FD1",
+                 "C11" = "#e9c2db",
+                 "C12" = "#d17bb2",
+                 "C13" = "#FEE500",
+                 "C14" = "#bfb341",
+                 "C15" = "#ded8a4",
+                 "C16" = "#00bca8",
+                 "C17" = "#10665d",
+                 "C18" = "#77a39f",
+                 "C19" = "#8a3c07",
+                 "C20" = "#eb9d67",
+                 "C21" = "#F47D2B",
+                 "C22" = "#89288F",
+                 "C23" = "#b452ba",
+                 "C24" = "#208a42",
+                 "C25" = "#06541f")
+
+rna_cols<-paletteContinuous(n=8)[c(1:3, 6:8)]
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+mtf_cols<-pal
+
+atac_cols <- paletteContinuous(set = "blueYellow",n = 10)
+```
+
+#load objects
+```{r}
+set.seed(1234)
+
+setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl") 
+m2<-loadArchRProject()
+m2_seu<-readRDS("9cl_seurat.rds")
+```
+
+# Fig 4A
+```{r}
+cds<-viewmaster::seurat_to_monocle3(m2_seu, assay_name = "GeneExpressionMatrix", seu_rd = "mo_UMAP")
+pdf("/fh/fast/furlan_s/user/owaltner/m2/Plots/mo_UMAP_clusters.pdf", width = 6, height = 5)
+plot_cells(cds, color_cells_by = "Clusters", label_cell_groups = F, cell_size = 0.7)+scale_color_manual(values = cluster_cols)&NoAxes() 
+dev.off()
+
+
+
+```
+
+
+#CHLA10 module expression Fig 3B, Fig S3A
+```{r interrogate chla10}
+chla10<-m2_seu[,m2_seu$cell_line == "CHLA10"]
+
+link_df<- read.csv("res/3_subgroup_links.csv")
+link_df<-link_df[!duplicated(link_df$gene),]
+link_df<-link_df[!duplicated(link_df$peak),]
+link_df$peak<-gsub(":", "-", link_df$peak)
+
+link_df$peak %>% sort() %>% head()
+rownames(chla10) %>% sort() %>% head()
+
+k1<- link_df[link_df$kmean == "1",]
+k2<- link_df[link_df$kmean == "2",]
+k3<- link_df[link_df$kmean == "3",]
+
+DefaultAssay(chla10)<-"GeneExpressionMatrix"
+chla10<-AddModuleScore(chla10, features = list(k1$gene, k2$gene, k3$gene), name = "k")
+FeaturePlot_scCustom(chla10, features = c("k1", "k2", "k3"), colors_use = rna_cols,na_cutoff = 0.05)&NoAxes()
+```
+
+```{r interrogate chla10}
+DefaultAssay(chla10)<-"ATAC"
+gr<-StringToGRanges(rownames(chla10)) %>% sort()
+x<-k2
+ov_peaks<-lapply(list(k1,k2,k3), function(x){
+  link_gr<-StringToGRanges(x$peak) %>% sort()
+  hits<-findOverlaps(gr, link_gr)
+  gr<-gr[hits@from] %>% sort()
+  ov_peaks<-GRangesToString(gr)
+  ov_peaks
+})
+
+
+chla10<-AddModuleScore(chla10, features = ov_peaks, name = "atac_k")
+FeaturePlot_scCustom(chla10, features = c("atac_k1", "atac_k2", "atac_k3"), colors_use = atac_cols,na_cutoff = 0.05)&NoAxes()
+```
+
+#Fig 3C
+```{r compare cluster C22 to C23 Motif }
+m2<-addMotifAnnotations(m2, force = T)
+
+markerTest <- getMarkerFeatures(
+  ArchRProj = m2, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "C22",
+  bgdGroups = "C23"
+)
+
+motifsUp <- peakAnnoEnrichment(
+  seMarker = markerTest,
+  ArchRProj = m2,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+)
+
+motifsDo <- peakAnnoEnrichment(
+  seMarker = markerTest,
+  ArchRProj = m2,
+  peakAnnotation = "Motif",
+  cutOff = "FDR <= 0.1 & Log2FC <= -0.5"
+)
+  
+
+#get motifs enriched in shFLI group and rank them by mlog10Padj
+df <- data.frame(TF = rownames(motifsUp), mlog10Padj = assay(motifsUp)[,1])
+df_1 <- df[order(df$mlog10Padj, decreasing = TRUE),]
+df_1$rank <- rev(seq_len(nrow(df_1)))
+df_1$group<-"C22"
+
+#get motifs enriched in shNS group and rank them by mlog10Padj
+df <- data.frame(TF = rownames(motifsDo), mlog10Padj = assay(motifsDo)[,1])
+df <- df[order(df$mlog10Padj, decreasing = TRUE),]
+df$rank <- rev(seq_len(nrow(df)))
+df$group<-"C23"
+df$rank<- -df$rank
+
+ #combine them together to get TF motif data on both groups
+agg<-rbind(df_1, df)
+
+agg$TF<-strsplit(agg$TF, "_") %>% sapply("[[", 1)
+  
+
+gg <- ggplot(agg, aes(rank, mlog10Padj, fill = ifelse(mlog10Padj > 2, group, NA))) + 
+  geom_point(aes(size =  mlog10Padj), color = "gray20", shape = 21) +
+  geom_vline(xintercept = 0)+
+  ggrepel::geom_label_repel(
+        data = agg[agg$mlog10Padj >250,], aes(x = rank, y = mlog10Padj, label = TF), 
+        color = "black",
+        fill = "white",
+        max.overlaps = Inf
+  )+theme_ArchR()+ 
+  ylab("-log10(P-adj) Motif Enrichment") + 
+  xlab("Rank Sorted TFs Enriched") +
+  scale_color_gradientn(colors = c("gray90", "gray10"))+ggtitle(label=paste0("C22 v C23"))+scale_fill_manual(values = c("#89288F","#b452ba"),na.value = "black") 
+pdf("c23_c22_mtf.pdf", width =5, height = 5)
+gg
+dev.off()
+```
+
+#Fig 3D
+```{r compare cluster C22 to C23 GEX}
+c22_genes <- getMarkerFeatures(
+    ArchRProj = m2, 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "Clusters",
+    bias = c( "Gex_nUMI"),
+    useGroups = "C22",
+    bgdGroups = "C23"
+)
+
+
+c22_markers <- getMarkers(c22_genes, cutOff = "FDR <= 0.01 & Log2FC >= 1.25")
+c22_markers@listData$C22$cluster_id <- "C22"
+
+c23_genes <- getMarkerFeatures(
+    ArchRProj = m2, 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "Clusters",
+    bias = c( "Gex_nUMI"),
+    useGroups = "C23",
+    bgdGroups = "C22"
+)
+
+c23_markers <- getMarkers(c23_genes, cutOff = "FDR <= 0.01 & Log2FC >= 1.25")
+c23_markers@listData$C23$cluster_id <- "C23"
+
+
+markerList<-list(c22_markers, c23_markers)
+names(markerList)<-c("C22", "C23")
+
+cluster_id<-"C22"
+# Initialize a results table
+results <- data.frame(cluster_id = character(),
+                      geneID = character(),
+                      p_value = numeric(),
+                      ID = character(),
+                      Description = character(),
+                      BgRatio = character(),
+                      p.adjust = numeric(),
+                      Count = numeric(),
+                      qvalue = numeric(),
+                      stringsAsFactors = FALSE)
+# Loop through each cluster and gene set, and perform enrichment analysis
+##change function from GO:BP or H respectively
+enrich_markers<-function(cluster_id){
+  cluster_id <- cluster_id
+  marker_sub<-markerList[[cluster_id]] %>% data.frame() 
+  genes<-marker_sub$name
+  
+  m_t2g <- msigdbr(species = "Homo sapiens",subcategory = "CGP") %>% 
+  dplyr::select(gs_name, gene_symbol) 
+  
+  m_t2g<-m_t2g[grep("EWSR1|EWING",m_t2g$gs_name),]
+  
+  # top_markers <- paste(names(seu@ident[i]), collapse = ",")
+  result <- enricher(gene =genes,
+                     TERM2GENE = m_t2g,
+                     pvalueCutoff = 0.05,
+                     universe = unique(c(markerList[["C22"]]@listData[["C22"]]@listData[["name"]], markerList[["C23"]]@listData[["C23"]]@listData[["name"]])),
+                     qvalueCutoff = 0.05,
+                     pAdjustMethod = "BH")
+  if (length(result@result) > 0) {
+    results <- result@result
+    results$cluster_id<-cluster_id
+    return(results)
+  }else{
+    return(NULL)
+  }
+  
+}
+
+# Use lapply to perform enrichment analysis for all cluster-gene set combinations
+results_list <- lapply(names(markerList),function(i){
+  enrich_markers(i)})
+
+# Flatten the results list and remove NULL elements
+results <- do.call(rbind, results_list)
+
+top_terms<-lapply(levels(factor(results$cluster_id)), function(x){
+  
+  top_gse_sub<-results  %>% dplyr::filter(cluster_id == x & pvalue < 0.05) 
+  top_gse_filt<-top_gse_sub %>% slice_min(pvalue, n =100) %>% slice_max(Count, n =100)
+  top_gse_filt$Description
+  
+})
+
+top_terms<-top_terms %>% unlist() %>% unique()
+
+results_sub<-results[results$Description %in% top_terms,]
+results_sub<-results_sub[results_sub$pvalue< 0.05,]
+# results_sub<-results_sub[!duplicated(results_sub$Description),]
+results_sub<-results_sub %>% group_by(cluster_id)
+results_sub<-results_sub%>% slice_min(pvalue, n =7)
+
+results_sub$Description<-factor(results_sub$Description, levels =rev(unique(results_sub$Description)))
+results_sub$cluster_id<-factor(results_sub$cluster_id, levels =unique(results_sub$cluster_id))
+
+ggplot(results_sub, aes(x = Description, y = cluster_id, size = Count, fill = pvalue))+
+geom_point(shape = 21, color="black")+
+theme_minimal()+
+RotatedAxis()+
+coord_flip()+
+scale_fill_gradientn(colors = paletteContinuous(set = "whiteBlue", reverse = T))+NoGrid()+theme_ArchR()
+```
+
+# Fig 3F pathway activity
+```{r}
+# Define your sample and assay.
+sample <- m2_seu
+assay <- "GeneExpressionMatrix"
+
+# Retrieve prior knowledge network.
+network <- decoupleR::get_progeny(organism = "human")
+
+# Run weighted means algorithm.
+
+activities <- decoupleR::run_wmean(mat = as.matrix(m2_seu[["GeneExpressionMatrix"]]@data),
+                                   network = network,
+                                   .source = "source",
+                                   .targe = "target",
+                                   .mor = "weight",
+                                   times = 100,
+                                   minsize = 5)
+
+
+
+# General heatmap.
+out <- SCpubr::do_PathwayActivityPlot(sample = sample,
+                                      activities = activities, viridis_color_map = "A", split.by = "Clusters", cell_size =5,
+                                      min.cutoff = 0.1,
+                                      max.cutoff = 0.9
+                                      
+)
+# out[["heatmaps"]][["average_scores"]]@ht_list[["Pathway activity"]]@matrix_color_mapping@colors<-rna_cols
+p <- out$heatmaps$average_scores
+p
+plotPDF(p, "pathway_actvity_cluster", width = 7, height =10, addDOC = F)
+```
+
+
+# cluster pearson correlation, Fig S3B
+```{r cluster correlation plot}
+t<-viewmaster::archR_to_seurat(m2, matrix = "PeakMatrix", binarize = F, archr_rd = "mo_UMAP")
+t<-UpdateSeuratObject(t)
+seu <- RunTFIDF(t) %>% FindTopFeatures( min.cutoff = 'q50') %>% RunSVD() 
+seu<-ScaleData(seu) %>% RunPCA() %>% FindVariableFeatures()
+
+library(SCpubr)
+p <- do_CorrelationPlot(sample = seu, 
+                                group.by = "Clusters")
+p
+```
+
+
+
+#CELL CYCLE EXPRESSION,  Supplementary Fig. 2C-D
+```{r}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+DefaultAssay(m2_seu)<-"GeneExpressionMatrix"
+m2_seu <- CellCycleScoring(m2_seu, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+names(m2_seu@meta.data)
+
+m2_seu$Clusters<-factor(m2_seu$Clusters, levels= paste0("C", 1:25))
+
+cc_clsuters<-table(m2_seu$Phase, m2_seu$Clusters) %>% as.data.frame()
+
+ggplot(cc_clsuters, aes(fill =Var1, y=Freq, x=Var2))+ 
+    geom_bar(stat = "identity",position = "fill")+
+    scale_fill_manual(values = brewer.pal("Set2", n =3))+
+    theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+FeaturePlot_scCustom(seu, features = "MKI67", colors_use = rna_cols, max.cutoff = "q99")&NoAxes()
+```
+
+

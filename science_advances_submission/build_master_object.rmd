@@ -1,0 +1,1277 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages({
+  # library(monocle3)
+  # library(reticulate)
+  library(openxlsx)  
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(xfun)
+  # library(pals)
+  library(rhdf5)
+  library(RColorBrewer)
+  library(Signac)
+  library(Seurat)
+  library(ggplot2)
+  library(future)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(EnsDb.Hsapiens.v86)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(ArchR)
+  library(parallel)
+  #library(scCustomize)
+  library(SeuratObject)
+})
+
+Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "MACS2/2.2.6-foss-2019b-Python-3.7.4")
+
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+
+knitr::opts_chunk$set(dev="CairoPNG")
+
+library(RcppArrayFire)
+library(viewmastR)
+```
+
+```{r}
+setwd("~/m1")
+m1<- loadArchRProject(path = "~/m1")
+m1_seu<-readRDS("m1.rds")
+
+library(future)
+plan("multicore", workers = detectCores())
+
+options(future.globals.maxSize = 360 * 1024 ^ 3) # for 50 Gb RAM
+```
+
+#Make object
+```{bash}
+cd '/Users/owaltner/Fred Hutchinson Cancer Research Center/Ewings - General/experiments/EW4'
+
+pf=EW4_L2
+outdir=data/$pf/peaks   
+macs2 callpeak -t data/$pf/outs/atac_fragments.tsv.gz -g 2.7e+09 -f BED --nomodel --extsize 200 --shift -100 -n macs2 --outdir $outdir
+
+pf=EW4_L3
+outdir=data/$pf/peaks   
+macs2 callpeak -t data/$pf/outs/atac_fragments.tsv.gz -g 2.7e+09 -f BED --nomodel --extsize 200 --shift -100 -n macs2 --outdir $outdir
+
+pf=EW4_L4
+outdir=data/$pf/peaks   
+macs2 callpeak -t data/$pf/outs/atac_fragments.tsv.gz -g 2.7e+09 -f BED --nomodel --extsize 200 --shift -100 -n macs2 --outdir $outdir
+
+pf=EW4_L5
+outdir=data/$pf/peaks   
+macs2 callpeak -t data/$pf/outs/atac_fragments.tsv.gz -g 2.7e+09 -f BED --nomodel --extsize 200 --shift -100 -n macs2 --outdir $outdir
+
+pf=EW4_L6
+outdir=data/$pf/peaks   
+macs2 callpeak -t data/$pf/outs/atac_fragments.tsv.gz -g 2.7e+09 -f BED --nomodel --extsize 200 --shift -100 -n macs2 --outdir $outdir
+```
+
+```{r Make object}
+setwd('/fh/fast/furlan_s/user/owalt/ewings/EW4')
+
+samps<-c("EW4_L1","EW4_L2", "EW4_L3", "EW4_L4", "EW4_L5", "EW4_L6", "EW_1_Mo", "EW_2_Mo", "EW_3_Mo")
+
+macs_peaks<-lapply(samps, function(i){
+  peaks <- read.table(file = file.path( i, "macs2_peaks.narrowPeak"))
+  colnames(peaks)<-c("chr start end name integer_score none fold_enrichment log10pvalue log10qvalue relative_summit_pos") %>% strsplit(" ") %>% unlist()
+  peaks
+})
+
+macs_granges<-lapply(macs_peaks, makeGRangesFromDataFrame)
+macs_cgranges<-do.call(c, macs_granges)
+macs_mo.peaks <- reduce(x = macs_cgranges)
+
+peakwidths <- width(macs_mo.peaks)
+macs_mo.peaks <- macs_mo.peaks[peakwidths  < 10000 & peakwidths > 20]
+macs_mo.peaks <- keepStandardChromosomes(macs_mo.peaks, pruning.mode = "coarse")
+
+
+meta<-lapply(samps, function(cell_line){
+  tab<-read.table(
+  file = file.path( cell_line, "per_barcode_metrics.csv"),
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+  )
+  tab[tab$is_cell!=0, ]
+})
+
+# macs_counts
+# saveRDS(macs_counts, file.path("~/EW4/macs_counts.rds"))
+
+frags<-lapply(frags, function(frag){
+  frag@path<-gsub("/~/EW4/data", DATA_DIR, frag@path )
+  frag
+})
+```
+
+
+```{r Make object}
+macs_counts <- lapply(1:length(samps), function(i){
+  FeatureMatrix(
+  fragments = frags[[i]], process_n = 5000,
+  features = macs_mo.peaks,
+  cells = rownames(meta[[i]]))
+})
+
+
+# saveRDS(macs_counts, file.path("~/EW4/macs_counts.rds"))
+# extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+
+BiocManager::install("GenomeInfoDb", force = T)
+
+# change to UCSC style 
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "hg38"
+
+annotations@seqnames@values <- paste0("chr", annotations@seqnames@values)
+
+# saveRDS(annotations, file = "~/annotations_hg38.rds")
+
+seus<-lapply(1:length(samps), function(i){
+  raw<-Read10X_h5(file.path("~/EW4", samps[i],  "raw_feature_bc_matrix.h5"))
+  seu<-CreateSeuratObject(
+    counts = raw$`Gene Expression`[,colnames(macs_counts[[i]])], assay= "RNA", meta.data = meta[[i]])
+  seu[["ATAC"]]<-CreateChromatinAssay(macs_counts[[i]], fragments = frags[[i]], sep = c(":", "-"), annotation = annotations)
+  seu$dataset<-samps[i]
+  seu
+})
+
+mo <- merge(
+  x = seus[[1]],
+  y = seus[2:length(seus)],
+  add.cell.ids = samps
+)
+
+macs_counts<-NULL
+seus <- NULL
+```
+
+```{r RNA/ATAC QC}
+DefaultAssay(mo) <- "ATAC"
+mo$Frip<-mo$atac_peak_region_fragments/mo$atac_fragments
+mo$log_ATAC<-log10(mo$nCount_ATAC)
+
+# compute TSS enrichment score per cell
+mo<- TSSEnrichment(object = mo, fast = T)
+mo <- NucleosomeSignal(mo)
+
+DefaultAssay(mo) <- "RNA"
+mo[["percent.mt"]] <- PercentageFeatureSet(mo, pattern = "^MT-")
+mo$log_RNA<-log10(mo$nCount_RNA)
+
+# # saveRDS(mo, file.path(CDS_DIR, "MO_unfiltered_111521.rds"))
+# 
+# mo <- readRDS(file.path(CDS_DIR, "MO_unfiltered_111521.rds"))
+# mo<- DietSeurat(mo)
+```
+
+```{r RNA/ATAC QC}
+VlnPlot(mo, features =  c("nCount_RNA", "nCount_ATAC", "percent.mt"), pt.size = 0, ncol = 3, log=T, group.by="dataset")
+VlnPlot(mo, features =  c("percent.mt"), pt.size = 0, group.by="dataset", y.max= 50)
+VlnPlot(mo, features =  c("log_RNA"), pt.size = 0, group.by="dataset")
+VlnPlot(mo, features =  c("log_ATAC"), pt.size = 0, group.by="dataset")
+VlnPlot(mo, features =  c("Frip"), pt.size = 0, group.by="dataset")
+VlnPlot(mo, features =  c("TSS.enrichment"), pt.size = 0, group.by="dataset")
+```
+
+```{r RNA/ATAC QC}
+mo<- subset(
+  x =mo,
+  subset = 
+    percent.mt <= 15 &
+    log_ATAC >= 3 &
+    log_ATAC <= 5 &
+    log_RNA <= 4.5 &
+    log_RNA >= 3 &
+    Frip >= .4)
+   
+```
+
+```{r Genotype}
+
+# file.exists(file.path(DATA_DIR, samps[5], "souporcell/clusters.tsv"))
+
+
+pcvs<-lapply(1:length(samps), function(i){
+  ctsv<-read.table(file.path("~/EW4", samps[i], "souporcell/clusters.tsv"), header = T)
+  cs<-as.matrix(ctsv[,colnames(ctsv)[grep("^cluster", colnames(ctsv))]])
+  lt<-log(cs*-1)
+  pc<-princomp(lt)
+  pcv<-as.data.frame(pc$scores)
+  ltdf<-as.data.frame(lt)
+  ltdf$status<-ctsv$status
+  ltdf$assignment<-ctsv$assignment
+  pcv$status<-ctsv$status
+  pcv$assignment<-ctsv$assignment
+  pcv$cell_line<-paste0(samps[i],"_", ctsv$barcode)
+  pcv
+})
+
+
+pcvall<-do.call(rbind, pcvs)
+
+
+pcvfound<-pcvall[pcvall$cell_line %in% rownames(mo@meta.data),]
+table(colnames(mo) %in% pcvfound$cell_line)
+mo_full<-mo
+mo<-mo_full[,colnames(mo_full) %in% pcvfound$cell_line]
+mo_full<-NULL
+mo$geno<-"Unknown"
+
+mo$geno[match(colnames(mo), pcvfound$cell_line)]<-pcvfound$assignment[match(pcvfound$cell_line, colnames(mo))]
+mo$genotype<-mo$geno
+mo$genotype[grepl("/", mo$genotype)]<-"Multiplet"
+
+mo$id<-paste0(mo$dataset, "_", mo$genotype)
+
+mo<-mo[,!mo$genotype %in% "Multiplet"]
+
+```
+
+```{r}
+mo$cell_line <- mo$id
+
+mo$cell_line[mo$cell_line == "EW4_L1_0"]<- "PDX132"
+mo$cell_line[mo$cell_line == "EW4_L1_1"]<- "CHLA10_shNS"
+mo$cell_line[mo$cell_line == "EW4_L1_2"]<- "A673_shNS"
+mo$cell_line[mo$cell_line == "EW4_L2_0"]<- "A673_shFLI1"
+mo$cell_line[mo$cell_line == "EW4_L2_1"]<- "hMSC_parent_240"
+mo$cell_line[mo$cell_line == "EW4_L2_2"]<- "CHLA10_shFLI1"
+mo$cell_line[mo$cell_line == "EW4_L3_0"]<- "U2OS_parent"
+mo$cell_line[mo$cell_line == "EW4_L3_1"]<- "TC71_shNS"
+mo$cell_line[mo$cell_line == "EW4_L3_2"]<- "PDX305_shNS"
+mo$cell_line[mo$cell_line == "EW4_L4_0"]<- "TC71_shFLI1"
+mo$cell_line[mo$cell_line == "EW4_L4_1"]<- "PDX305_shFLI1"
+mo$cell_line[mo$cell_line == "EW4_L4_2"]<- "hMSC_parent"
+mo$cell_line[mo$cell_line == "EW4_L5_0"]<- "U2OS_empty"
+mo$cell_line[mo$cell_line == "EW4_L5_1"]<- "hMSC_empty"
+mo$cell_line[mo$cell_line == "EW4_L5_2"]<- "RD_parent"
+mo$cell_line[mo$cell_line == "EW4_L6_0"]<- "hMSC.OE"
+mo$cell_line[mo$cell_line == "EW4_L6_1"]<- "hMSC.h7"
+mo$cell_line[mo$cell_line == "EW4_L6_2"]<- "U2OS_OE"
+```
+
+```{r}
+mo$cell_line[mo$cell_line == "EW_1_Mo_0"]<- "A4573"
+mo$cell_line[mo$cell_line == "EW_1_Mo_1"]<- "A673"
+mo$cell_line[mo$cell_line == "EW_1_Mo_2"]<- "SKNMC"
+mo$cell_line[mo$cell_line == "EW_2_Mo_0"]<- "TC32"
+mo$cell_line[mo$cell_line == "EW_2_Mo_1"]<- "PDX305"
+mo$cell_line[mo$cell_line == "EW_2_Mo_2"]<- "CHLA10"
+mo$cell_line[mo$cell_line == "EW_3_Mo_0"]<- "CHLA9"
+mo$cell_line[mo$cell_line == "EW_3_Mo_1"]<- "TC71"
+mo$cell_line[mo$cell_line == "EW_3_Mo_2"]<- "RDES"
+```
+
+```{r}
+m1<- mo[,mo$cell_line %in% c("A4573", "A673", "SKNMC", "TC32", "PDX305", "CHLA10", "CHLA9", "TC71", "RDES", "PDX132", "hMSC_parent_240","RD_parent", "hMSC_parent", "U2OS_parent" , "hMSC.h7")]
+m2<- mo[,mo$cell_line %in% c("A4573", "A673", "SKNMC", "TC32", "PDX305", "CHLA10", "CHLA9", "TC71", "RDES", "PDX132")]
+m3<- mo[,mo$cell_line %in% c("CHLA10_shNS","A673_shNS",  "A673_shFLI1", "CHLA10_shFLI1", "TC71_shNS", "TC71_shFLI1","PDX305_shFLI1", "U2OS_empty","hMSC_empty",  "PDX305_shNS", "hMSC.OE", "U2OS_OE")]
+```
+
+#ARCHR Master object 
+```{r}
+devtools::install_github("GreenleafLab/ArchR", ref="master", repos = BiocManager::repositories())
+
+library(ArchR)
+
+samps<-c("EW4_L1","EW4_L2", "EW4_L3", "EW4_L4", "EW4_L5", "EW4_L6", "EW_1_Mo", "EW_2_Mo", "EW_3_Mo")
+
+
+library(ArchR)
+sapply(1:length(files), function(i){
+  
+  path<- file.path(files [i])
+  reformatFragmentFiles(path)
+})
+
+inputFiles <- sapply(1:length(samps), function(i){
+  
+  path<- file.path( samps[i], "atac_fragments-Reformat.tsv.gz")
+})
+
+
+names(inputFiles)<-samps
+
+addArchRGenome("hg38")
+
+ArrowFiles <- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = names(inputFiles),
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE,
+  minTSS = 2, 
+  minFrags = 1000,
+  force = T
+)
+
+ArrowFiles <- sapply(1:length(samps), function(i){
+  
+  path<- file.path("ArrowFiles", paste0(samps[i],  ".arrow"))
+})
+
+ew4 <- ArchRProject(
+  ArrowFiles = ArrowFiles, 
+  outputDirectory = "~/EW4",
+  copyArrows =  F#This is recommened so that if you modify the Arrow files you have an original copy for later usage
+)
+
+saveArchRProject(ew4)
+
+ew4<- loadArchRProject("~/EW4")
+
+mas<- readRDS(file ="~/EW4/mo_master.rds")
+
+df<-mas@meta.data
+
+rownames(df) <- gsub("EW4_L1_", "EW4_L1#", rownames(df))
+rownames(df) <- gsub("EW4_L2_", "EW4_L2#", rownames(df))
+rownames(df) <- gsub("EW4_L3_", "EW4_L3#", rownames(df))
+rownames(df) <- gsub("EW4_L4_", "EW4_L4#", rownames(df))
+rownames(df) <- gsub("EW4_L5_", "EW4_L5#", rownames(df))
+rownames(df) <- gsub("EW4_L6_", "EW4_L6#", rownames(df))
+rownames(df) <- gsub("EW_1_Mo_", "EW_1_Mo#", rownames(df))
+rownames(df) <- gsub("EW_2_Mo_", "EW_2_Mo#", rownames(df))
+rownames(df) <- gsub("EW_3_Mo_", "EW_3_Mo#", rownames(df))
+
+##subset mas
+
+ew4 <- addIterativeLSI(
+    ArchRProj = ew4,
+    useMatrix = "TileMatrix", 
+    name = "ATAC_LSI", 
+    iterations = 5, 
+    varFeatures = 10000, 
+    dimsToUse = 1:15,
+    force=T,
+    LSIMethod = 1
+)
+
+ew4<-addDoubletScores(ew4, threads = 1)
+ew4<-filterDoublets(ew4)
+
+ew4<-ew4[which(rownames(ew4) %in% rownames(df)),]
+df<-df[order(match(rownames(df), rownames(ew4))),]
+
+ids<- rownames(ew4)
+ids<- gsub("#", "_", ids)
+
+mas<- mas[,colnames(mas) %in% ids]
+
+getAvailableMatrices(ew4)
+
+ew4$cell_line <- df$cell_line
+
+files<-paste(samps, "/filtered_feature_bc_matrix.h5", sep="")
+
+file.exists(files)
+
+seRNA <- import10xFeatureMatrix(input = files, names = samps)
+
+seRNAmo<-cbind(assay(seRNA[[1]]), assay(seRNA[[2]]), assay(seRNA[[3]]) ,assay(seRNA[[4]]), assay(seRNA[[5]]), assay(seRNA[[6]]),assay(seRNA[[7]]),assay(seRNA[[8]]), assay(seRNA[[9]]))
+
+seRNA2<-SummarizedExperiment(assays=list(counts=seRNAmo), rowRanges= rowRanges(seRNA[[9]]))
+
+ew4<-addGeneExpressionMatrix(input=ew4, seRNA=seRNA2, force = T)
+
+getAvailableMatrices(ew4)
+```
+
+#M1 ARCHR
+```{r subset from master }
+ew4<-loadArchRProject(path = "~/EW4")
+
+m1<-subsetArchRProject(
+  ArchRProj = ew4,
+  cells = getCellNames(ew4[ew4$cell_line %in% c("A4573", "A673", "SKNMC", "TC32", "PDX305", "CHLA10", "CHLA9", "TC71", "RDES", "hMSC_parent_240","RD_parent", "hMSC_parent", "U2OS_parent" , "hMSC.h7"),]),
+  outputDirectory = "~/m1",
+  dropCells = TRUE,
+  logFile = NULL,
+  threads = getArchRThreads(),
+  force = T
+)
+
+m1@projectMetadata$outputDirectory<-"~/m1"
+
+saveArchRProject(m1, outputDirectory = "~/m1", overwrite = F)
+
+setwd("~/m1")
+
+m1<- loadArchRProject()
+
+m1@projectMetadata$outputDirectory <- "~/m1"
+getOutputDirectory(m1)
+
+#version 11 cuda
+dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+# dyn.load('/app/software/JAGS/4.3.0-foss-2021b/lib/libjags.so.4')
+
+library(RcppArrayFire)
+library(viewmaster)
+
+```
+
+```{r reduce dimensions }
+m1 <- addIterativeLSI(
+    ArchRProj = m1,
+    useMatrix = "TileMatrix", 
+    name = "ATAC_LSI", 
+    iterations = 5, 
+    varFeatures = 10000, 
+    dimsToUse = 1:15,
+    force=T,
+    LSIMethod = 1
+)
+
+getArchRThreads()
+m1 <- addUMAP(
+    ArchRProj = m1,
+    reducedDims = "ATAC_LSI",
+    name = "ATAC_UMAP",
+    nNeighbors = 20,
+    minDist = 0.5,
+    metric = "cosine",
+    force=T
+)
+
+
+p<-plotEmbedding(ArchRProj = m1, colorBy = "cellColData", name = "cell_line", embedding = "ATAC_UMAP")
+plotPDF(p, name = "ATAC_UMAP.pdf", ArchRProj = m1, addDOC = FALSE, width = 8, height = 10)
+
+getAvailableMatrices(m1)
+
+m1 <- addIterativeLSI(
+    ArchRProj = m1, 
+    clusterParams = list(
+      resolution = 0.2, 
+      cell_lineCells = 10000,
+      n.start = 10
+    ),
+    saveIterations = FALSE,
+    useMatrix = "GeneExpressionMatrix", 
+    depthCol = "Gex_nUMI",
+    varFeatures = 2500,
+    firstSelection = "variable",
+    binarize = FALSE,
+    name = "LSI_RNA"
+)
+
+
+m1 <- addUMAP(
+    ArchRProj = m1,
+    reducedDims = "LSI_RNA",
+    name = "RNA_UMAP",
+    nNeighbors = 30,
+    minDist = 0.5,
+    metric = "cosine",
+    force=T
+)
+
+p<-plotEmbedding(m1, name = "cell_line", embedding = "RNA_UMAP", size = 1.5, labelAsFactors=F, labelMeans=F)
+plotPDF(p, name = "RNA_UMAP.pdf", ArchRProj = m1, addDOC = FALSE, width = 8, height = 10)
+
+#mo Dims
+m1 <- addCombinedDims(m1, reducedDims = c("LSI_RNA", "ATAC_LSI"), name =  "mo")
+
+m1 <- addUMAP(
+    ArchRProj = m1,
+    reducedDims = "mo",
+    name = "mo_UMAP",
+    nNeighbors = 50,
+    minDist = 0.6,
+    metric = "cosine",
+    force = T
+)
+
+m1 <- addImputeWeights(m1, reducedDims = "mo")
+```
+
+#Dimplot
+```{r reduce dimensions }
+svglite::svglite("umap.svg")
+plotEmbedding(m1, name = "cell_line", embedding = "mo_UMAP", labelAsFactors=F, labelMeans=F)+scale_color_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+# plotPDF(p, name = "mo_UMAP.pdf", ArchRProj = m1, addDOC = FALSE, width = 8, height = 10)
+dev.off()
+
+cds<-seurat_to_monocle3(m1_seu, seu_rd = "mo_UMAP", assay = "RNA")
+plot_cells(cds, color_cells_by = "cell_line", cell_size = 0.25)+scale_color_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+```
+
+#add peaks
+```{r call peaks}
+#Call peaks on ArchR object
+m1 <- addGroupCoverages(ArchRProj = m1, groupBy = "cell_line", force = T, thread =1)
+
+source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
+module("load", "MACS2/2.2.6-foss-2019b-Python-3.7.4")
+
+
+#if you're running on rhino make sure to ml MACS2 before launching R, if you're running locally you need to install macs2 with python..definitely less messy to run on rhino
+pathToMacs2 <- findMacs2()
+
+m1 <- addReproduciblePeakSet(
+    ArchRProj = m1, 
+    groupBy = "cell_line", 
+    pathToMacs2 =pathToMacs2
+)
+
+m1<- addPeakMatrix(m1)
+
+m1 <- addPeak2GeneLinks(
+    ArchRProj = m1,
+    reducedDims = "mo",
+    useMatrix = "GeneExpressionMatrix"
+)
+
+saveArchRProject(m1, outputDirectory = "~/m1", overwrite = T)
+m1<-loadArchRProject()
+```
+
+```{r ChomVAR moitf annotations}
+mtfs<-chromVARmotifs::human_pwms_v2
+names(mtfs) <- names(mtfs) %>% strsplit("_") %>% sapply("[[", 3)
+
+m1 <- addMotifAnnotations(ArchRProj = m1, name = "Motif", force = T, motifPWMs = mtfs)
+m1 <- addBgdPeaks(m1, force = T)
+
+m1 <- addDeviationsMatrix(
+  ArchRProj = m1, 
+  peakAnnotation = "Motif",
+  force = TRUE, threads=detectCores()
+)
+
+saveArchRProject(m1)
+```
+
+```{r JASPAR2020 moitf annotations}
+m1 <- addMotifAnnotations(ArchRProj = m1, force = T, motifSet = "JASPAR2020")
+m1 <- addDeviationsMatrix(
+  ArchRProj = m1, 
+  peakAnnotation = "JASPAR_Motif",
+  force = TRUE, threads=1
+)
+
+saveArchRProject(m1)
+```
+
+#EWSFLI1motif
+```{r EWSFLI1 motif plot}
+m1$cell_line<-as.character(m1$cell_line)
+p <- plotGroups(ArchRProj = m1, 
+  groupBy = "cell_line", 
+  colorBy = "MotifMatrix", 
+  name = "z:EWSR1.FLI1_22",
+  imputeWeights = getImputeWeights(m1),
+  groupOrder = rev(c("SKNMC","A4573","CHLA10", "RDES","PDX305","TC32","CHLA9","A673","TC71","U2OS_parent", "hMSC.h7","hMSC_parent","RD_parent","hMSC_parent_240")))
+
+
+p2<-p+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+
+plotPDF(p2, name = "EWS_chromvar_ridgeplot", width =7, height = 7, ArchRProj = m1, addDOC = FALSE)
+
+```
+
+```{r chromvar heatmaps of big TFs}
+corr<-read.csv("~/m2/res/tf_motif_expression_correlation_exp_wide.csv")
+
+mtf_mat<-getMatrixFromProject(m1, useMatrix = "MotifMatrix")
+mtf_seu<-CreateSeuratObject(counts = mtf_mat@assays@data$deviations, assay = "chromVAR", meta.data=data.frame(mtf_mat@colData), project = "mtf_cellLine")
+
+chrom_cell_line_avg<-AverageExpression(mtf_seu, assay ="chromVAR", group.by = "cell_line", return.seurat = T)
+#exp wide
+chrom_mat <- chrom_cell_line_avg@assays$chromVAR@counts[unique(corr[corr$TFRegulator=="YES",]$MotifMatrix_name),] %>% as.matrix()
+
+chrom_mat<- t(scale(t(chrom_mat)))
+
+# chrom_cell_line_avg$cond<-colnames(chrom_cell_line_avg)
+# chrom_cell_line_avg$cond[grepl("shFLI", colnames(chrom_cell_line_avg))]<-"shFLI"
+# chrom_cell_line_avg$cond[!grepl("shFLI", colnames(chrom_cell_line_avg))]<-"shNS"
+
+# split<-factor(chrom_cell_line_avg$cond)
+
+pal<- rev(mako(n=9))
+pal<-pal[1:8]
+pal<-c("#ffffff", pal)
+# quantile(chrom_mat, c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9))
+col_fun = circlize::colorRamp2(quantile(chrom_mat[,colnames(chrom_mat)[c(1:8,10:13)]], c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)), pal)
+col_fun = circlize::colorRamp2(quantile(chrom_mat, c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)), pal)
+
+
+h1<-Heatmap(chrom_mat[,colnames(chrom_mat)[c(1:8,10:13)]], name = "chromVAR",  col =col_fun,  row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 16), column_names_rot = -90, row_names_rot = -20, cluster_columns =T,width = 100, cluster_rows = T, show_column_dend = T, show_row_dend = F)
+
+h1<-Heatmap(chrom_mat, name = "chromVAR",  col =col_fun,  row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 16), column_names_rot = -90, row_names_rot = -20, cluster_columns =T,width = 100, cluster_rows = T, show_column_dend = T, show_row_dend = F)
+```
+
+#export jaspar motif matrix
+```{r}
+jaspar_mat<-getMatrixFromProject(m1, useMatrix = "MotifMatrix", threads =1)
+```
+
+
+#M1 Seurat
+```{r}
+ids<- rownames(m1@cellColData)
+mas<- readRDS(file ="~/EW4/mo_master.rds")
+
+ids<- gsub("#", "_", ids)
+
+m1_seu<- mas[, colnames(mas) %in% ids]
+
+umap<- m1@embeddings$mo_UMAP$df
+names(umap)<-c("mo_UMAP_1", "mo_UMAP_2")
+rownames(umap)<- gsub("#", "_", rownames(umap))
+
+umap<-umap[order(match(rownames(umap), colnames(m1_seu))),]
+
+head(rownames(umap))
+head(colnames(m1_seu))
+
+DefaultAssay(m1_seu) <- "RNA"
+m1_seu <- SCTransform(m1_seu)
+m1_seu <- RunPCA(m1_seu, features = VariableFeatures(m1_seu))
+ElbowPlot(m1_seu)
+DefaultAssay(m1_seu) <- "SCT"
+m1_seu<-RunUMAP(m1_seu, dims = 1:30, verbose = T, reduction.name = "sct_umap", reduction = "pca")
+DimPlot(m1_seu, reduction = "sct_umap", group.by = "dataset")
+
+
+m1_seu@reductions$mo_UMAP<-m1_seu@reductions$sct_umap
+m1_seu@reductions$mo_UMAP@cell.embeddings<- umap %>% as.matrix()
+m1_seu@reductions$mo_UMAP@key<-"mo_UMAP_"
+
+pdf("mo_umap.pdf")
+DimPlot(m1_seu, reduction = "mo_UMAP", group.by = "cell_line")
+dev.off()
+
+saveRDS(m1_seu, file = "~/m1/m1.rds")
+m1_seu<-readRDS(file = "~/m1/m1.rds")
+```
+
+```{r}
+cds<-seurat_to_monocle3(m1_seu, seu_rd = "mo_UMAP")
+plot_cells(cds, color_cells_by = "cell_line", label_cell_groups = F)+scale_color_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))+NoAxes()
+```
+
+#Fusion expression
+```{r load data}
+library(data.table)
+library(chimeraviz)
+
+DimPlot(m1_seu, group.by = "cell_line", reduction = "mo_UMAP")
+
+#load data
+DATA_DIR<-"/fh/fast/furlan_s/user/owalt/ewings/fusion/data"
+list.files(DATA_DIR)
+key<-as.data.frame(fread(file.path(DATA_DIR, "_README.tsv")))
+files<-list.files(DATA_DIR, full.names = T)
+
+#make circle plot of results
+files<-files[grep("jaffa_results.csv$", files)]
+res<-read.csv(files)
+
+fusion<-chimeraviz::import_jaffa(files, genome_version = "hg38")
+r<-fread(files)
+fusion<-fusion[grep("HighConfidence", r$classification)]
+if(length(fusion)>1){
+  plot_circle(fusion)
+  title(key$sample[i])
+}
+```
+
+```{r format bam}
+library(Biostrings)
+library(tidyr)
+library(Rgb)
+library(seqinr)
+library(Rsamtools)
+library(pbmcapply)
+library(scCustomize)
+
+#make bam
+p4 <- ScanBamParam( what=c("qname","flag","rname","strand","pos","qwidth","mapq","cigar","isize","seq","qual" ))
+# prefs<-c("E1.", "E2.", "E3.")
+
+ftp<-list.files(DATA_DIR, full.names = T)
+ftp<-ftp[grep("jaffa.aligned.sorted.bam$", ftp)]
+
+head(bam[[1]]$rname)
+
+bam<-scanBam(ftp)
+lapply(bam[[1]], function(xx) xx[1])
+
+
+#format barcodes
+l<-strsplit(bam[[1]]$qname, ";")
+sample<-l %>% sapply("[[", 1) %>% strsplit("_") %>% sapply("[[", 2)
+umi<- l %>% sapply("[[", 5) %>% gsub("XM=", "", .)
+cb<- l %>% sapply("[[", 6) %>% gsub("CB=", "", .)
+cb<-spgs::reverseComplement(cb, case="as is")
+length(cb)
+
+key$prefix[key$prefix=="MO1.1"]<-"EW_1_Mo"
+key$prefix[key$prefix=="MO1.2"]<-"EW_2_Mo"
+key$prefix[key$prefix=="MO1.3"]<-"EW_3_Mo"
+key$prefix[key$prefix=="MO2.1"]<-"EW4_L1"
+key$prefix[key$prefix=="MO2.2"]<-"EW4_L2"
+key$prefix[key$prefix=="MO2.3"]<-"EW4_L3"
+key$prefix[key$prefix=="MO2.4"]<-"EW4_L4"
+key$prefix[key$prefix=="MO2.5"]<-"EW4_L5"
+key$prefix[key$prefix=="MO2.6"]<-"EW4_L6"
+
+cb<-paste0(key$prefix[match(sample, paste0(key$SMRTcell, "/", key$barcode))], "_", cb, "-1")
+
+cb %in% colnames(m1_seu) %>% table()
+colnames(m1_seu) %in% cb %>% table()
+
+colnames(m1_seu)[which(!colnames(m1_seu) %in% cb)] %>% str_split("_") %>% sapply("[[", 2) %>% table()
+
+mol<-as.character(bam[[1]]$rname)
+```
+
+```{r add to seurat}
+#format barcodes
+cellstoadd<-Cells(m1_seu)[!Cells(m1_seu) %in% cb]
+cb<-c(cb, cellstoadd)
+mol<-c(mol, rep("dummy", length(cellstoadd)))
+dt<-data.table(cb=cb, mol=mol)
+tab<-table(dt)
+mat<-t(tab)
+spmat<-as(mat, "sparseMatrix")
+rownames(spmat)[1]<-"dummy|dummy|;nomolecule"
+spmat<-spmat[grep("molecule", rownames(spmat)),Cells(m1_seu)]
+rownames(spmat)<-paste0(strsplit(rownames(spmat), ";") %>% sapply("[[", 1) %>% gsub("merged.dedup\\|", "", .) %>% strsplit( "\\|") %>% sapply("[[", 1), "_", strsplit(rownames(spmat), ";") %>% sapply("[[", 2))
+rownames(spmat)<-gsub("_", "-", rownames(spmat))
+head(spmat)
+dim(spmat)
+#add to seurat object
+m1_seu$fusions<-CreateAssayObject(counts = spmat)
+DefaultAssay(m1_seu)<-"fusions"
+```
+
+```{r get bams from rhabdo/msc then blast to show barcode hopping}
+bam[[1]]$qname
+bam[[1]]$sc_barcode <-cb
+dim(bam[[1]])
+
+
+table(m1_seu$cell_line)
+msc<-m1_seu[,m1_seu$cell_line == "hMSC_parent_240"]%>% colnames()
+msc_idx<-which(bam[[1]]$sc_barcode %in% msc)
+ews_idx<-grep("EWSR1:FLI1", bam[[1]]$rname )
+
+#false positives
+msc_ews_idx<-intersect(msc_idx, ews_idx)
+
+msc_ews_reads<-bam[[1]]$seq[msc_ews_idx]
+
+#put into blast
+writeXStringSet(msc_ews_reads, 'msc.fa')
+
+#look at bam mapping quality EWS true vs false positive
+
+#get true positives
+table(m1_seu$cell_line)
+pdx<-m1_seu[,m1_seu$cell_line == "PDX305"]%>% colnames()
+pdx_idx<-which(bam[[1]]$sc_barcode %in% pdx)
+
+#true positives
+pdx_ews_idx<-intersect(pdx_idx, ews_idx)
+
+pdx_ews_reads<-bam[[1]]$seq[pdx_ews_idx]
+#put into blast
+writeXStringSet(pdx_ews_reads, 'pdx.fa')
+```
+
+
+```{r get bams from rhabdo/msc then blast to show barcode hopping}
+msc_ews_qual<-bam[[1]]$mapq[msc_ews_idx]
+pdx_ews_qual<-bam[[1]]$mapq[pdx_ews_idx]
+
+table(msc_ews_qual)%>% data.frame() %>% ggplot(aes(x=msc_ews_qual, y = Freq))+geom_bar(stat ="identity")
+
+table(pdx_ews_qual)%>% data.frame() %>% ggplot(aes(x=pdx_ews_qual, y = Freq))+geom_bar(stat ="identity")
+```
+
+
+```{r get bams from rhabdo/msc then blast to show barcode hopping}
+f<-annotate::blastSequences(msc_bam[sample(1:length(msc_bam),1, replace=T)], as = "data.frame", timeout = 100000000)
+
+dfl<-pbmclapply(msc_bam, function(x){
+  df<-annotate::blastSequences(x, as = "data.frame", timeout = 100000000)
+  df
+}, mc.cores = detectCores())
+
+blast_df<-do.call(rbind, dfl)
+
+```
+
+
+```{r bar of all fusion counts, across cls?}
+counts_ews<-rowSums(m1_seu@assays$fusions@counts[grep("EWSR1:FLI1", rownames(m1_seu)),])
+counts_ews<-counts_ews[rev(order(counts_ews))]
+
+ews_df<-data.frame(counts = counts_ews, fusion = names(counts_ews))
+ews_df$fusion_id<-ews_df$fusion %>% str_split(. , "EWSR1:FLI1-molecule/") %>% sapply("[[", 2)
+
+ews_df$fusion_id<-factor(ews_df$fusion_id, levels = ews_df[order(ews_df$counts, decreasing = T),]$fusion_id)
+
+ggplot(ews_df, aes(x=fusion_id, y = log10(counts), fill = fusion_id))+geom_bar(stat= "identity", color = "black",width = 1 )+scale_fill_manual(values = sfc(n = 55))+theme_classic()&RotatedAxis()&NoLegend()
+```
+
+```{r}
+#of the counts, whats the percentage per cell line
+x<-ews_df$fusion[1]
+i<-"A673"
+fusion_cl_list<-pbmclapply(ews_df$fusion, function(x){
+  
+  fus<-m1_seu@assays$fusions@counts[x,, drop =F]
+  
+  cell_line_frac<-pbmclapply(levels(factor(m1_seu$cell_line)), function(i){
+    
+    bcs<-m1_seu[,m1_seu$cell_line == i] %>% colnames()
+    sum<-fus[,bcs] %>% sum()
+    frac<-sum / fus %>% rowSums
+    names(frac)<-i
+    frac
+    
+  }, mc.cores = detectCores())
+  
+  cell_line_frac %>% unlist
+  
+}, mc.cores = detectCores())
+
+names(fusion_cl_list)<-ews_df$fusion
+fusion_cl_list %>% as.data.frame()
+mat<-fusion_cl_list %>% as.data.frame() %>% as.matrix()
+mat[is.na(mat)]<-0
+
+Heatmap(mat, show_row_names = T, show)
+
+mat
+```
+
+```{r vln plt}
+DefaultAssay(m1_seu)<-"fusions"
+rownames(m1_seu)
+
+m1_seu<-NormalizeData(m1_seu)
+m1_seu<-ScaleData(m1_seu)
+
+m1_seu$cell_line<-factor(m1_seu$cell_line, levels = c("hMSC_parent_240",  "hMSC_parent", "hMSC.h7", "RD_parent", "U2OS_parent", "A4573", "A673", "CHLA9", "CHLA10", "PDX305", "RDES", "SKNMC", "TC32", "TC71"))
+
+m1_seu<-AddModuleScore(m1_seu, features = list(rownames(m1_seu)[grep("EWSR1:FLI1", rownames(m1_seu))]), name ="Avg_EWSFLI", nbin = 1)
+
+VlnPlot(object = m1_seu, features = "Avg_EWSFLI1", group.by = "cell_line", pt.size = 0)+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+VlnPlot(object = m1_seu, features = "EWSR1:FLI1-molecule/577827", group.by = "cell_line", pt.size = 0.1, slot = "scale.data")+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+VlnPlot(object = m1_seu, features = "EWSR1:FLI1-molecule/181074", group.by = "cell_line", pt.size = 0.1)+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+VlnPlot(object = m1_seu, features = "EWSR1:FLI1-molecule/360992", group.by = "cell_line", pt.size = 0.1)+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+VlnPlot(object = m1_seu, features = "EWSR1:FLI1-molecule/130866", group.by = "cell_line", pt.size = 0.1)+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+```
+
+
+
+```{r}
+FeaturePlot_scCustom(m1_seu, features =  "EWSR1:FLI1-molecule/577827", reduction = "mo_UMAP", colors_use = paletteContinuous(n=6))
+
+VlnPlot(object = m1_seu, features = "EWSR1:FLI1-molecule/577827", group.by = "cell_line", pt.size = 0)+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+VlnPlot(object = m1_seu, features = "EWSR1:FLI1-molecule/577827", group.by = "cell_line", pt.size = 0)+scale_fill_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))
+
+m1_seu@meta.data
+FeaturePlot_scCustom(m1_seu, features =  "log_umi")
+
+```
+
+#GENE SET ANALYSIS
+```{r Gene expression of IC_EWS}
+aynaud<- read.delim(file = "~/EW4/ICEWS_genes.txt")
+DefaultAssay(m1_seu)<-"SCT"
+m1_seu<-AddModuleScore(m1_seu, features = list(mill$geneName), name = "Miller")
+m1_seu<-AddModuleScore(m1_seu, features = list(aynaud$Gene), name = "Aynaud")
+m1_seu$cell_line<-factor(m1_seu$cell_line, levels = c("SKNMC","A4573","CHLA10", "RDES","PDX305","TC32","CHLA9","A673","TC71","U2OS_parent", "hMSC.h7","hMSC_parent","RD_parent","hMSC_parent_240"))
+
+Idents(m1_seu)<-"cell_line"
+m1_seu$cell_line<-factor(m1_seu$cell_line, levels = c("hMSC_parent_240",  "hMSC_parent", "hMSC.h7", "RD_parent", "U2OS_parent", "A4573", "A673", "CHLA9", "CHLA10", "PDX305", "RDES", "SKNMC", "TC32", "TC71"))
+"#3BBCA8"
+pdf("aynaud_vln2.pdf", width = 12, height = 5)
+VlnPlot(m1_seu, features = "Aynaud1",  pt.size = 0,  cols =   c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"),group.by = "cell_line")
+dev.off()
+```
+
+```{r Gene Activity of IC_EWS}
+aynaud<- read.delim(file = "~/EW4/ICEWS_genes.txt")
+
+gene_acc<-archR_to_seurat(m1, matrix = "GeneScoreMatrix", archr_rd = "mo_UMAP", binarize = T)
+
+gene_acc<-AddModuleScore(gene_acc, features = list(aynaud$Gene), name = "Aynaud")
+gene_acc$cell_line<-factor(gene_acc$cell_line, levels = c("SKNMC","A4573","CHLA10", "RDES","PDX305","TC32","CHLA9","A673","TC71","U2OS_parent", "hMSC.h7","hMSC_parent","RD_parent","hMSC_parent_240"))
+
+Idents(gene_acc)<-"cell_line"
+gene_acc$cell_line<-factor(gene_acc$cell_line, levels = c("hMSC_parent_240",  "hMSC_parent", "hMSC.h7", "RD_parent", "U2OS_parent", "TC71", "A673", "CHLA9", "TC32", "PDX305", "RDES", "CHLA10", "A4573", "SKNMC"))
+"#3BBCA8"
+pdf("aynaud_gene_acc.pdf", width = 12, height = 5)
+VlnPlot(gene_acc, features = "Aynaud1",  pt.size = 0,  cols =   c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"),group.by = "cell_line")&NoLegend()
+dev.off()
+```
+
+
+#Top Markers Heatmap
+```{r}
+markersGenes <- getMarkerFeatures(
+    ArchRProj = m1, 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "cell_line",
+    bias = c( "Gex_nUMI"),
+    testMethod = "wilcoxon"
+)
+
+heatmapGenes <- markerHeatmap(
+  seMarker = markersGenes, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  transpose = TRUE,nLabel = 0
+  
+)
+
+ComplexHeatmap::draw(heatmapGenes, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+```
+
+#Top Markers Heatmap
+```{r}
+markersPeaks <- getMarkerFeatures(
+    ArchRProj = m1, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "cell_line",
+    testMethod = "wilcoxon"
+)
+
+heatmapPeaks <- markerHeatmap(
+  seMarker = markersPeaks, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  transpose = TRUE,nLabel = 0
+  
+)
+
+ComplexHeatmap::draw(heatmapGenes, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+```
+
+
+```{r}
+atac<-getMatrixFromProject(
+  ArchRProj = m1,
+  useMatrix = "PeakMatrix",
+  useSeqnames = NULL,
+  verbose = TRUE,
+  binarize = FALSE,
+  threads = getArchRThreads(),
+  logFile = createLogFile("getMatrixFromProject")
+)
+
+
+peaks<-getPeakSet(ArchRProj = m1)
+
+
+length(rownames(m1_seu[["ATAC"]]))
+
+colnames(atac) <- gsub("#", "_",colnames(atac))
+rowData(atac)$idx
+
+colnames(assays(atac)$PeakMatrix)<-colnames(atac)
+
+cts<-assays(atac)$PeakMatrix
+
+
+colnames(cts)<-colnames(atac)
+rownames(cts)<-paste0(peaks@seqnames,"-", peaks@ranges@start,"-",peaks@ranges@start+peaks@ranges@width)
+m1_seu[["AR_ATAC"]]<-CreateAssayObject(counts = cts)
+
+
+gene_acc<-Signac::GeneActivity(m1_seu, assay = "AR_ATAC")
+
+```
+
+
+
+
+
+
+
+
+#EXTRA
+```{r}
+atac<-getMatrixFromProject(
+  ArchRProj = m1,
+  useMatrix = "PeakMatrix",
+  useSeqnames = NULL,
+  verbose = TRUE,
+  binarize = FALSE,
+  threads = getArchRThreads(),
+  logFile = createLogFile("getMatrixFromProject")
+)
+
+getPeakSet(ArchRProj = m1)
+
+getSeqnames(ArchRProj = m1, useMatrix = "PeakMatrix")
+
+length(rownames(m1_seu[["ATAC"]]))
+
+
+colnames(atac) <- gsub("#", "_",colnames(atac))
+rowData(atac)$idx
+
+colnames(assays(atac)$PeakMatrix)<-colnames(atac)
+
+m1_seu[["AR_ATAC"]]<-CreateAssayObject(counts = t(assays(atac)$PeakMatrix))
+
+dim(m1_seu)
+
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
+)
+DefaultAssay(
+  )<-"ATAC"
+
+# add motif information
+m1_seu <- AddMotifs(
+  object = m1_seu,
+  genome = BSgenome.Hsapiens.UCSC.hg38,
+  pfm = pfm
+)
+
+m1_seu <- RunChromVAR(
+  object = m1_seu,
+  genome = BSgenome.Hsapiens.UCSC.hg38
+)
+
+DefaultAssay(mouse_brain) <- 'chromvar'
+
+# look at the activity of Mef2c
+p2 <- FeaturePlot(
+  object = mouse_brain,
+  features = "MA0497.1",
+  min.cutoff = 'q10',
+  max.cutoff = 'q90',
+  pt.size = 0.1
+)
+
+motifPositions <- getPositions(m1)
+
+motifs <- c("FLI","SP4", "KLF2", "POU3F3", "POU4F3", "PHOX2B")
+markerMotifs <- unlist(lapply(motifs, function(x) grep(x, names(motifPositions), value = TRUE)))
+markerMotifs 
+
+seFoot <- getFootprints(
+  ArchRProj = m1, 
+  positions = motifPositions[markerMotifs[2]], 
+  groupBy = "cell_line"
+)
+
+p<-plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = m1, 
+  normMethod = "Subtract",
+  plotName = "Subtract-Bias",
+  addDOC = FALSE,
+  pal = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"),
+  plot = FALSE
+)
+plotPDF(p, name = "footprints.pdf", ArchRProj = m1, addDOC = FALSE, width = 6 , height = 8)
+
+
+#DEP MAP ESSENTIAL GENES
+dep<-read.delim("~/EW4/depmap_Ewing_cells_no_common_essential.txt")
+DefaultAssay(m1_seu)<-"SCT"
+m1_seu<-AddModuleScore(m1_seu, features = list(dep[which(dep$SKNMC < -0.5),]$gene), name = "DEP")
+m1_seu$cell_line<-factor(m1_seu$cell_line, levels = c("SKNMC","A4573","CHLA10", "RDES","PDX305","TC32","CHLA9","A673","TC71","U2OS_parent", "hMSC.h7","hMSC_parent","RD_parent","hMSC_parent_240"))
+
+Idents(m1_seu)<-"cell_line"
+m1_seu$cell_line<-as.character(m1_seu$cell_line)
+m1_seu$cell_line<-factor(m1_seu$cell_line, levels = c("hMSC_parent_240",  "hMSC_parent", "hMSC.h7", "RD_parent", "U2OS_parent", "A4573", "A673", "CHLA9", "CHLA10", "PDX305", "RDES", "SKNMC", "TC32", "TC71"))
+pdf("DEP.pdf", width = 12, height = 5)
+VlnPlot(m1_seu, features = "DEP1",  pt.size = 0,  cols =   c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"),group.by = "cell_line")
+dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(VennDiagram)
+p<-Vennerable::Venn(list(msc = sig_msc$MotifMatrix_name, ew =sig_ews$MotifMatrix_name))
+plot(p)
+library(ggvenn)
+ggvenn(list(msc = sig_msc$MotifMatrix_name, ew =sig_ews$MotifMatrix_name))
+
+vignette("Venn")
+devtools::install_github("yanlinlin82/ggvenn")
+
+ggvenn(list(k1 = kmean[kmean$kmean == "1",]$gene, k2 = kmean[kmean$kmean == "2",]$gene,k3 = kmean[kmean$kmean == "3",]$gene,dep =dep$gene))
+
+p<-Vennerable::Venn(list(k1 = kmean[kmean$kmean == "1",]$gene, k2 = kmean[kmean$kmean == "2",]$gene,k3 = kmean[kmean$kmean == "3",]$gene,dep =dep$gene))
+plot(p, doWeights = F, type = "elipses")
+
+```
+```{r TF regulators EWS vs MSC}
+
+seGroupMotif <- getGroupSE(ArchRProj = m1, useMatrix = "MotifMatrix", groupBy = "cell_line")
+seZ <- seGroupMotif[rowData(seGroupMotif)$seqnames=="z",]
+colnames(seZ)
+
+#get MSC
+# seZ<-seZ[,colnames(seZ)[c(1:4,8,10:13)]]
+seZ<-seZ[,colnames(seZ)[c(5:7)]]
+
+rowData(seZ)$maxDelta <- lapply(seq_len(ncol(seZ)), function(x){
+  rowMaxs(assay(seZ) - assay(seZ)[,x])
+}) %>% Reduce("cbind", .) %>% rowMaxs
+
+corGSM_MM <- correlateMatrices(
+  ArchRProj = m1,
+  useMatrix1 = "GeneExpressionMatrix",
+  useMatrix2 = "MotifMatrix",
+  reducedDims = "mo"
+)
+  
+corGSM_MM$maxDelta <- rowData(seZ)[match(corGSM_MM$MotifMatrix_name, rowData(seZ)$name), "maxDelta"]
+
+corGSM_MM <- corGSM_MM[order(abs(corGSM_MM$cor), decreasing = TRUE), ]
+corGSM_MM <- corGSM_MM[which(!duplicated(gsub("\\-.*","",corGSM_MM[,"MotifMatrix_name"]))), ]
+corGSM_MM$TFRegulator <- "NO"
+corGSM_MM$TFRegulator[which(corGSM_MM$cor > 0.5 & corGSM_MM$padj < 0.05 & corGSM_MM$maxDelta > quantile(corGSM_MM$maxDelta, 0.75))] <- "YES"
+sort(corGSM_MM[corGSM_MM$TFRegulator=="YES",1])
+
+df<-data.frame(corGSM_MM)
+
+write.csv(df, file.path("~/m1/tf_motif_expression_correlation_MSC.csv"))
+
+p <- ggplot(df, aes(cor, maxDelta, color = TFRegulator)) +
+  geom_point() + 
+  theme_ArchR() +
+  geom_vline(xintercept = 0, lty = "dashed") + 
+  scale_color_manual(values = c("NO"="darkgrey", "YES"="firebrick3")) +
+  xlab("Correlation To Gene Score") +
+  ylab("Max TF Motif Delta") +
+  scale_y_continuous(
+    expand = c(0,0), 
+    limits = c(0, max(df$maxDelta)*1.05)
+  )+
+  geom_label_repel(data = df[corGSM_MM$TFRegulator == "YES",],label = as.character(df[corGSM_MM$TFRegulator == "YES",]$GeneExpressionMatrix_matchName),
+                   box.padding   = 0.35, 
+                   point.padding = 0.6,
+                   force = 3,
+                   segment.color = 'grey50',
+                   colour = "black")
+
+
+p
+```
+
+```{r}
+ews_corr<- read.csv( file.path("~/m2/res/tf_motif_expression_correlation_exp_wide.csv"))
+msc_corr<- read.csv( file.path("~/m1/tf_motif_expression_correlation_MSC.csv"))
+```
+
+```{r}
+reg_list<-list(msc_corr, ews_corr)
+names(reg_list)<-c("MSC", "EWS_cells")
+
+reg_list2 <- lapply(1:length(reg_list), function(x){
+  reg_list[[x]]$subgroup <-  rep(names(reg_list)[[x]], length(reg_list[[x]]$TFRegulator))
+  reg_list[[x]]
+})
+df <- do.call("rbind",reg_list2)
+
+# by_tfs <- df %>% dplyr::filter(df$MotifMatrix_name %in% unique(ews_corr[ews_corr$TFRegulator=="YES",]$MotifMatrix_name))%>% group_by(subgroup)%>% arrange(subgroup, desc(maxDelta))
+
+p <- ggplot(df, aes(cor, maxDelta, color = subgroup)) +
+  geom_point() + 
+  theme_ArchR() +
+  geom_vline(xintercept = 0, lty = "dashed") + 
+  scale_color_manual(values = c("MSC"="darkgrey", "EWS_cells"="firebrick3")) +
+  xlab("Correlation To Gene Score") +
+  ylab("Max TF Motif Delta") +
+  scale_y_continuous(
+    expand = c(0,0), 
+    limits = c(0, max(df$maxDelta)*1.05)
+  )+
+  geom_text_repel(data = df[df$TFRegulator == "YES",],label = as.character(df[df$TFRegulator == "YES",]$GeneExpressionMatrix_matchName),
+                   box.padding   = 0.35, 
+                   point.padding = 0.6,
+                   force = 3,
+                   segment.color = 'grey50',
+                   colour = "black")
+
+
+p
+```
+
+```{r}
+sig_ew<- ews_corr %>% dplyr::filter(TFRegulator == "YES") %>% dplyr::select(MotifMatrix_name)
+sig_msc<-msc_corr %>% dplyr::filter(TFRegulator == "YES") %>% dplyr::select(MotifMatrix_name)
+
+df<-  df[df$MotifMatrix_name %in% c(sig_ew$MotifMatrix_name, sig_msc$MotifMatrix_name),] %>% group_by(subgroup)%>% arrange(subgroup, desc(TFRegulator),desc(maxDelta))
+
+df$MotifMatrix_name<- factor(df$MotifMatrix_name, levels = rev(unique(df$MotifMatrix_name)))
+
+pal<-turbo()
+ggplot(data = df, aes(x = subgroup, y = MotifMatrix_name)) + 
+  geom_point(aes(size = cor, fill = maxDelta), alpha = 0.75, shape = 21) +theme_bw()+NoGrid()+scale_fill_gradientn(colors = pal)
+```
+```{r}
+shared_tfs<-sig_msc %>% dplyr::filter(MotifMatrix_name %in% sig_ew$MotifMatrix_name) %>% dplyr::select(MotifMatrix_name)
+
+msc_tfs<-sig_msc %>% dplyr::filter(!MotifMatrix_name %in% sig_ew$MotifMatrix_name)%>% dplyr::select(MotifMatrix_name)
+
+ew_tfs<-sig_ew %>% dplyr::filter(!MotifMatrix_name %in% sig_msc$MotifMatrix_name)%>% dplyr::select(MotifMatrix_name)
+
+library(ggvenn)
+p<-ggvenn(list(msc = sig_msc$MotifMatrix_name, ew =sig_ew$MotifMatrix_name))
+```
