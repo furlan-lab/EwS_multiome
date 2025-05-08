@@ -55,14 +55,14 @@ set.seed(1234)
 
 setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
 m1<- loadArchRProject("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
-m1_seu<-readRDS("all_parents_seurat.rds")
+m1_seu<-readRDS("//fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents/all_parents_seurat.rds")
 
 setwd("/fh/fast/furlan_s/user/owaltner/m2") 
 m2<-loadArchRProject()
 m2_seu<-readRDS("m2.rds")
 ```
 
-#colors
+# colors
 ```{r}
 all_parents_cols<-c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
                "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB")
@@ -106,14 +106,14 @@ mtf_cols<-pal
 atac_cols <- paletteContinuous(set = "blueYellow",n = 10)
 ```
 
-#Dimplot, Fig 1A
+# Dimplot, Fig 1A
 ```{r reduce dimensions }
 cds<-seurat_to_monocle3(m1_seu, seu_rd = "mo_UMAP", assay = "MotifMatrix")
 plot_cells(cds, color_cells_by = "cell_line", cell_size = 0.65, label_cell_groups = F)+scale_color_manual(values = c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
                "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB"))&NoAxes()
 ```
 
-#EWSFLI1 motif, Fig 1B
+# EWSFLI1 motif, Fig 1B
 ```{r EWSFLI1 motif plot}
 m1$cell_line<-as.character(m1$cell_line)     
 p <- plotGroups(ArchRProj = m1, 
@@ -134,7 +134,116 @@ plotPDF(p2, name = "EWS_chromvar_ridgeplot", width =7, height = 7, ArchRProj = m
 ```
 
 
-#Top Markers Heatmap, Fig 1C
+# GGAA microsatelitie EWS:FLI binding sites chromvar Fig 1C, Fig S1 D
+```{r}
+msat_regs<-read.table("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/ggaa.bed", header = F)
+non_msat_regs<-read.table("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/non_ggaa.bed")
+
+names(msat_regs)<-c("chr", "start", "end", "score", "strand")
+names(non_msat_regs)<-c("chr", "start", "end", "score", "strand")
+
+msat_gr<-makeGRangesFromDataFrame(msat_regs)
+non_msat_gr<-makeGRangesFromDataFrame(non_msat_regs)
+  
+m1<-addPeakAnnotations(ArchRProj = m1, regions = list("msat"=msat_gr,"non_msat"=non_msat_gr), name = "msat_EWS:FLI_binding_site", force =T)
+m1 <- addDeviationsMatrix(
+  ArchRProj = m1, 
+  peakAnnotation = "msat_EWS:FLI_binding_site",
+  force = TRUE
+)
+getAvailableMatrices(m1)
+
+markerChIP <- getFeatures(m1, useMatrix = "msat_EWS:FLI_binding_siteMatrix")
+markerChIP <- sort(grep("z:", markerChIP, value = TRUE))
+markerChIP
+
+p <- plotEmbedding(
+    ArchRProj = m1, 
+    colorBy = "msat_EWS:FLI_binding_siteMatrix", 
+    name = markerChIP, 
+    embedding = "mo_UMAP"
+)
+
+msat_bind_mat<-getMatrixFromProject(m1, useMatrix = "msat_EWS:FLI_binding_siteMatrix")
+
+msat_bind_mat<-assays(msat_bind_mat)$deviations
+
+t<-t(msat_bind_mat)
+
+t
+
+m1_seu@meta.data$msat_EWS_FLI_binding<-t[,1]
+m1_seu@meta.data$non_msat_EWS_FLI_binding<-t[,2]
+
+dim(msat_bind_mat)
+dim(m1_seu)
+
+FeaturePlot_scCustom(m1_seu, features = c("msat_EWS_FLI_binding", "non_msat_EWS_FLI_binding"), order = T, colors_use = mtf_cols[c(-1, -9)], pt.size = 0.7, max.cutoff = "q99")&NoAxes()
+
+VlnPlot(m1_seu, group.by ="cell_line", features = c("msat_EWS_FLI_binding", "non_msat_EWS_FLI_binding"), pt.size = 0)+scale_fill_manual(values = all_parents_cols)
+```
+
+# Fig 1D , Fig SE
+```{r}
+combined_df<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/fusion/pb_fusion_results.csv")
+
+#load ewing + non ewing object
+m1_seu<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents/all_parents_seurat.rds")
+
+table(colnames(m1) %in% combined_df$cb)
+length(colnames(m1))
+
+fus_df<-combined_df[grepl("EWSR1", combined_df$fusion) & grepl("FLI1", combined_df$fusion),]
+mat<-table(colnames(m1) %in% fus_df$cb, m1$cell_line) %>% as.matrix()
+mat
+
+
+df<-table(colnames(m1) %in% fus_df$cb, m1$cell_line) %>% as.data.frame()
+
+
+fus<-mat[,which(colnames(mat) %in% colnames(m1))]
+fus<-fus[order(match(colnames(m1)[which(colnames(m1) %in% names(fus))], names(fus)))]
+
+m1$fus<-0
+m1$fus[which(colnames(m1) %in% names(fus))]<-fus
+
+FeaturePlot_scCustom(m1, features = "fus", reduction = "mo_UMAP", colors_use = paletteContinuous("fireworks2"), order =T)
+cds<-viewmastR::seurat_to_monocle3(m1, seu_rd = "mo_UMAP")
+
+plot_cells(cds[,order(cds$fus, decreasing = F)], color_cells_by = "fus", cell_size = 0.7)+scale_color_gradientn(colors = paletteContinuous("fireworks"), na.value = "gray90")&NoAxes()
+```
+
+```{r}
+m1$pos_fus<-ifelse(m1$fus >0, "pos", "neg")
+df<-table(m1$pos_fus, m1$cell_line) %>% as.data.frame() %>% group_by(Var2)
+df<-df[df$Var1 == "pos",] %>% arrange(Freq)
+df$Var2<-factor(df$Var2, levels =  df$Var2)
+ggplot(df[df$Var1 == "pos",], aes(x=Var2, y = Freq , fill =Var2))+geom_bar(stat = "identity", color = "black")+scale_fill_manual(values = cols)
+```
+
+
+# Top Markers Genes Heatmap, 1E
+```{r}
+markersGenes <- getMarkerFeatures(
+    ArchRProj = m1, 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "cell_line",
+    bias = c( "Gex_nUMI"),
+    testMethod = "wilcoxon"
+)
+
+heatmapGenes <- markerHeatmap(
+  seMarker = markersGenes, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  transpose = TRUE,nLabel = 0
+  
+)
+
+ComplexHeatmap::draw(heatmapGenes, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+```
+
+
+# Top Peaks Heatmap, Fig 1F
 ```{r}
 markersPeaks <- getMarkerFeatures(
     ArchRProj = m1, 
@@ -153,20 +262,21 @@ heatmapPeaks <- markerHeatmap(
 ComplexHeatmap::draw(heatmapGenes, heatmap_legend_side = "bot", annotation_legend_side = "bot")
 ```
 
-#cluster pearson correlation, Fig 1D
-```{r cluster correlation plot}
-t<-viewmaster::archR_to_seurat(m2, matrix = "PeakMatrix", binarize = F, archr_rd = "mo_UMAP")
-t<-UpdateSeuratObject(t)
-seu <- RunTFIDF(t) %>% FindTopFeatures( min.cutoff = 'q50') %>% RunSVD() 
-seu<-ScaleData(seu) %>% RunPCA() %>% FindVariableFeatures()
 
-library(SCpubr)
-p <- do_CorrelationPlot(sample = seu, 
-                                group.by = "Clusters")
-p
+#  qc stats Fig S1 B
+```{r}
+all_parents_cols<-c("A4573"="#D51F26","A673"="#272E6A","CHLA9"="#208A42","CHLA10"="#89288F","PDX305"="#F47D2B", "RDES"="#FEE500","SKNMC"="#8A9FD1","TC32"="#3BBCA8","TC71"="#E6C2DC",
+               "hMSC_parent_240"="#90D5E4",  "hMSC_parent"="#89C75F","hMSC.h7"="#F37B7D","RD_parent"="#78385c","U2OS_parent"="#C06CAB")
+
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/multiome/qc/m1_qc.pdf", width = 20, height = 4.5)
+VlnPlot(m1_seu, features = c("Gex_nGenes", "Gex_nUMI", "TSSEnrichment", "ReadsInBlacklist", "nFrags"), group.by = "cell_line", cols = all_parents_cols, pt.size= 0, ncol = 5)
+dev.off()
+
 ```
 
-#IC_EWS, Supp Fig B-C
+
+# IC_EWS, Supp Fig C
 ```{r Gene expression of IC_EWS}
 aynaud<- read.delim(file = "/fh/fast/furlan_s/user/owalt/ewings/gene_sets/ICEWS_genes.txt")
 DefaultAssay(m1_seu)<-"GeneExpressionMatrix"
@@ -191,35 +301,5 @@ pdf("aynaud_gene_acc.pdf", width = 12, height = 5)
 VlnPlot(m1_seu, features = "Aynaud_GS1",  pt.size = 0,  cols = all_parents_cols,group.by = "cell_line")&NoLegend()
 dev.off()
 ```
-
-
-#Top Markers Heatmap, Supp Fig 1C
-```{r}
-markersGenes <- getMarkerFeatures(
-    ArchRProj = m1, 
-    useMatrix = "GeneExpressionMatrix", 
-    groupBy = "cell_line",
-    bias = c( "Gex_nUMI"),
-    testMethod = "wilcoxon"
-)
-
-heatmapGenes <- markerHeatmap(
-  seMarker = markersGenes, 
-  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
-  transpose = TRUE,nLabel = 0
-  
-)
-
-ComplexHeatmap::draw(heatmapGenes, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-```
-
-#DimPlot, Supplementary Fig. 2F
-```{r Dim Plot}
-cds<-viewmaster::seurat_to_monocle3(seu, assay_name = "GeneExpressionMatrix", seu_rd = "mo_UMAP")
-pdf("/fh/fast/furlan_s/user/owaltner/m2/Plots/mo_UMAP_clusters.pdf", width = 6, height = 5)
-plot_cells(cds, color_cells_by = "Clusters", label_cell_groups = F, cell_size = 0.7)+scale_color_manual(values = cluster_cols)&NoAxes() 
-dev.off()
-```
-
 
 
