@@ -46,7 +46,7 @@ suppressPackageStartupMessages({
   library(viridis)
 
 })
-
+options()
 #version 11 cuda
 dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
 
@@ -121,9 +121,6 @@ cds<-viewmaster::seurat_to_monocle3(m2_seu, assay_name = "GeneExpressionMatrix",
 pdf("/fh/fast/furlan_s/user/owaltner/m2/Plots/mo_UMAP_clusters.pdf", width = 6, height = 5)
 plot_cells(cds, color_cells_by = "Clusters", label_cell_groups = F, cell_size = 0.7)+scale_color_manual(values = cluster_cols)&NoAxes() 
 dev.off()
-
-
-
 ```
 
 
@@ -334,6 +331,30 @@ theme_minimal()+
 RotatedAxis()+
 coord_flip()+
 scale_fill_gradientn(colors = paletteContinuous(set = "whiteBlue", reverse = T))+NoGrid()+theme_ArchR()
+
+
+#export c22, c23 marker genes
+marker_list<-list("c22"=c22_genes, "c23" = c23_genes)
+
+
+df_list<-lapply(1:length(marker_list), function(x){
+  
+  df<-do.call(cbind, marker_list[[x]]@assays@data@listData)
+  names(df)<-names(marker_list[[x]]@assays@data@listData)
+  df$gene_short_name <- marker_list[[x]]@elementMetadata@listData[["name"]]
+  df$marker_gene <-ifelse( df$FDR <= 0.01 & df$Log2FC >= 1.25 , TRUE, FALSE )
+  df$cluster<-names(marker_list)[x]
+  df
+  
+})
+
+
+
+df_merge<-do.call(rbind, df_list)
+
+
+df_merge %>% dplyr::filter(gene_short_name == "NT5E" & Log2FC >=1.25 & FDR <= 0.01)
+write.csv(df_merge, "/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/c22_c23_markers.csv")
 ```
 
 # Fig 3F pathway activity
@@ -370,7 +391,6 @@ p
 plotPDF(p, "pathway_actvity_cluster", width = 7, height =10, addDOC = F)
 ```
 
-
 # cluster pearson correlation, Fig S3B
 ```{r cluster correlation plot}
 t<-viewmaster::archR_to_seurat(m2, matrix = "PeakMatrix", binarize = F, archr_rd = "mo_UMAP")
@@ -384,7 +404,104 @@ p <- do_CorrelationPlot(sample = seu,
 p
 ```
 
+#Compare to CHLA9 signatures
+```{r}
 
+
+chla9_genes <- getMarkerFeatures(
+    ArchRProj = m2, 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "cell_line",
+    bias = c( "Gex_nUMI"),
+    useGroups = "CHLA9",
+    bgdGroups = "CHLA10"
+)
+
+
+chla9_markers <- getMarkers(chla9_genes, cutOff = "FDR <= 0.01 & Log2FC >= 1.25")
+chla9_markers@listData$CHLA9$cluster_id <- "CHLA9"
+
+
+markerList<-list(chla9_markers, c22_markers, c23_markers)
+names(markerList)<-c("CHLA9", "C22", "C23")
+
+
+# Initialize a results table
+results <- data.frame(cluster_id = character(),
+                      geneID = character(),
+                      p_value = numeric(),
+                      ID = character(),
+                      Description = character(),
+                      BgRatio = character(),
+                      p.adjust = numeric(),
+                      Count = numeric(),
+                      qvalue = numeric(),
+                      stringsAsFactors = FALSE)
+# Loop through each cluster and gene set, and perform enrichment analysis
+##change function from GO:BP or H respectively
+enrich_markers<-function(cluster_id){
+  cluster_id <- cluster_id
+  marker_sub<-markerList[[cluster_id]] %>% data.frame() 
+  genes<-marker_sub$name
+  
+  m_t2g <- msigdbr(species = "Homo sapiens",subcategory = "H") %>% 
+  dplyr::select(gs_name, gene_symbol) 
+  
+  #m_t2g<-m_t2g[grep("EWSR1|EWING",m_t2g$gs_name),]
+  
+  # top_markers <- paste(names(seu@ident[i]), collapse = ",")
+  result <- enricher(gene =genes,
+                     TERM2GENE = m_t2g,
+                     pvalueCutoff = 0.05,
+                     universe = unique(c(markerList[["CHLA9"]]@listData[["CHLA9"]]@listData[["name"]],                          markerList[["C22"]]@listData[["C22"]]@listData[["name"]], 
+                     markerList[["C23"]]@listData[["C23"]]@listData[["name"]])),
+                     qvalueCutoff = 0.05,
+                     pAdjustMethod = "BH")
+  if (length(result@result) > 0) {
+    results <- result@result
+    results$cluster_id<-cluster_id
+    return(results)
+  }else{
+    return(NULL)
+  }
+  
+}
+
+# Use lapply to perform enrichment analysis for all cluster-gene set combinations
+results_list <- lapply(names(markerList),function(i){
+  enrich_markers(i)})
+
+# Flatten the results list and remove NULL elements
+results <- do.call(rbind, results_list)
+
+top_terms<-lapply(levels(factor(results$cluster_id)), function(x){
+  
+  top_gse_sub<-results  %>% dplyr::filter(cluster_id == x & pvalue < 0.05) 
+  top_gse_filt<-top_gse_sub %>% slice_min(pvalue, n =100) %>% slice_max(Count, n =100)
+  top_gse_filt$Description
+  
+})
+
+top_terms<-top_terms %>% unlist() %>% unique()
+
+results_sub<-results[results$Description %in% top_terms,]
+results_sub<-results_sub[results_sub$pvalue< 0.05,]
+# results_sub<-results_sub[!duplicated(results_sub$Description),]
+results_sub<-results_sub %>% group_by(cluster_id)
+results_sub<-results_sub%>% slice_min(pvalue, n =10)
+
+results_sub$Description<-factor(results_sub$Description, levels =rev(unique(results_sub$Description)))
+results_sub$cluster_id<-factor(results_sub$cluster_id, levels =unique(results_sub$cluster_id))
+
+p<-ggplot(results_sub, aes(x = Description, y = cluster_id, size = Count, fill = pvalue))+
+geom_point(shape = 21, color="black")+
+theme_minimal()+
+RotatedAxis()+
+coord_flip()+
+scale_fill_gradientn(colors = paletteContinuous(set = "whiteBlue", reverse = T))+NoGrid()+theme_ArchR()
+
+ggsave(p, filename="/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/Plots/chla10_c22_c23_gobp.pdf", width = 8, height = 6.5)
+```
 
 #CELL CYCLE EXPRESSION,  Supplementary Fig. 2C-D
 ```{r}

@@ -23,7 +23,7 @@ suppressPackageStartupMessages({
   library(RColorBrewer)
   library(Signac)
   library(Seurat)
-  library(ggplot2)
+  |library(ggplot2)
   library(future)
   library(GenomicRanges)
   library(ComplexHeatmap)
@@ -47,7 +47,7 @@ suppressPackageStartupMessages({
 Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
 source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
 module("load", "OpenBLAS/0.3.21-GCC-12.2.0")
-module("load", "MACS2/2.2.9.1-foss-2022b")
+module("load", "Rust/1.83.0-GCCcore-13.3.0")
 Sys.setenv(R_LIBS_USER="/home/owaltner/R/x86_64-pc-linux-gnu-library/4.2")
 
 

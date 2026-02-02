@@ -35,11 +35,16 @@ suppressPackageStartupMessages({
   library(scCustomize)
   library(SeuratObject)
 })
+library(sp)
+library(stringi)
+BiocManager::install("stringi")
 
 Sys.setenv(MODULEPATH="/app/modules/all", MODULEPATH_ROOT="/app/modules/all", MODULESHOME="/app/lmod/lmod")
 source("/app/lmod/lmod/init/R", echo=FALSE, max=Inf)
 module("load", "MACS2/2.2.6-foss-2019b-Python-3.7.4")
 
+Sys.setenv(R_LIBS_USER = "/home/owaltner/R/x86_64-pc-linux-gnu-library/4.2")
+Sys.getenv()
 #version 11 cuda
 dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
 
@@ -55,7 +60,7 @@ set.seed(1234)
 
 setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
 m1<- loadArchRProject("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
-m1_seu<-readRDS("//fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents/all_parents_seurat.rds")
+m1_seu<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents/all_parents_seurat.rds")
 
 setwd("/fh/fast/furlan_s/user/owaltner/m2") 
 m2<-loadArchRProject()
@@ -177,7 +182,8 @@ m1_seu@meta.data$non_msat_EWS_FLI_binding<-t[,2]
 dim(msat_bind_mat)
 dim(m1_seu)
 
-FeaturePlot_scCustom(m1_seu, features = c("msat_EWS_FLI_binding", "non_msat_EWS_FLI_binding"), order = T, colors_use = mtf_cols[c(-1, -9)], pt.size = 0.7, max.cutoff = "q99")&NoAxes()
+p<-FeaturePlot_scCustom(m1_seu, features = c("msat_EWS_FLI_binding", "non_msat_EWS_FLI_binding"), order = T, pt.size = 0.1, max.cutoff = "q99")&NoAxes()
+ggsave(p, filename="/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents/Plots/ews_fli_bind_msat_umap.pdf", width =10, height =5)
 ```
 
 # GGAA microsatelitie EWS:FLI binding sites chromvar Fig 1C, Fig S1 D

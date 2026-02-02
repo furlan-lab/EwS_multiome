@@ -32,6 +32,7 @@ suppressPackageStartupMessages({
   library(Signac)
   library(Seurat)
   library(ggplot2)
+  library(openxlsx)
   library(future)
   library(EnsDb.Hsapiens.v86)
   library(SummarizedExperiment)
@@ -59,112 +60,36 @@ py_config()
 ```
 
 ```{r helpful functions}
-# gene_list<-list(kmean_probes[[3]])
-# name="k2"
-strat_curve<-function(obj, gene_list, name){
-  obj<-AddModuleScore(obj, features = gene_list, name = name)
-  quants<-quantile(obj[[paste0(name,"1")]] %>% unlist(), 0.85)
-  obj$pos<-T
-  obj$pos[obj[[paste0(name,"1")]] < quants]<-F
+
+meta<-euro_meta
+fix_meta<-function(meta){
   
-  cox<-coxph(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
-  pval<-cox$waldtest["pvalue"]
-
-  survfit2(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
-  ggsurvfit() +
-  labs(
-    x = "Days",
-    y = "Event free survival probability"
-  )+ylim(c(0,1))+ggtitle(label = paste0(name, " high expression / pvalue = " , round(pval, 4)))
+  idx_to_fix<-which(grepl("charac", names(meta)))
+  #i<-idx_to_fix[7]
+  for(i in idx_to_fix){
+      print(i)
+      name<-meta[,i] %>% str_split(": ",) %>% sapply("[[", 1) %>% unique()
+      name<-name[name != ""]
+      name<-gsub(" ", "_", name)
+      name<-gsub("\\(", "", name)
+      name<-gsub(")", "", name)
+      names(meta)[i]<-name
+      data<-meta[,i] %>% str_split(": ",) 
+      meta[,i]<-sapply(data, function(x){
+        if(length(x) >1){
+          x[2]
+        }else{
+          x
+        }
+      })
+  }
+  
+  return(meta)
 }
 
-gene<-"PTMA"
-strat_curve_gene<-function(obj, gene){
-  probes<-fdat[which(fdat$gene_short_name %in% gene), ]$id
-  if(length(probes) >1){
-    obj<-AddModuleScore(obj, features = list(probes), name = gene)
-    quant<-quantile(obj[[paste0(name,"1")]] %>% unlist(), 0.5)
-    obj$pos<-T
-    obj$pos[obj[[paste0(name,"1")]] < quant]<-F  
-  }
-  if(length(probes) == 1){
-    obj$gene<-obj@assays$RNA@counts[probes,]
-    quant<-quantile(obj$gene %>% unlist(), 0.5)
-    obj$pos<-T
-    obj$pos[obj$gene < quant]<-F  
-  }
-  cox<-coxph(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
-  pval<-cox$waldtest["pvalue"]
-  survfit2(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
-  ggsurvfit() +
-  labs(
-    x = "Days",
-    y = "Event free survival probability"
-  )+ylim(c(0,1))+ggtitle(label = paste0(gene, " high expression / pvalue = " , round(pval, 4)))
-}
 ```
 
-# Patient Microarray data set1
-```{r set up file paths}
-# -------------------------------------
-
-# -------------------------------------
-# find relative directory on Server
-# -------------------------------------
-
-key<-"/fh/fast/furlan_s/user/owalt/ewings"
-flag<-"EwingMA"
-setwd(file.path(key, flag))
-# -------------------------------------
-# specify paths and load functions
-# -------------------------------------
-DATA_DIR <- file.path( key,flag,  "CEL") # SPECIFY HERE
-RES_DIR  <- file.path(  key,flag, "res")      # SPECIFY HERE
-
-directory.wb<-read.xlsx(file.path(key,flag, "excel_sheets/46 tumors with array profiles_BPC and REG numbers.xlsx"))
-
-directory.ws<-directory.wb
-colnames(directory.ws)<-gsub("\\.", "", colnames(directory.ws))
-classvec=as.factor(directory.ws$`EWS-FLItranslocationtype`)
-
-CELfiles<-list.files(DATA_DIR)[grep(".CEL$", list.files(DATA_DIR))]
-linker<-strsplit(CELfiles, "-") %>% sapply("[[", 1)
-linker==directory.ws$`SPECSMAC#`
-directory.ws$FileName<-file.path(DATA_DIR, CELfiles)
-rownames(directory.ws)<-directory.ws$`SPECSMAC#`
-```
-
-```{r build microarray object}
-setwd("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/CEL")
-rawData <- read.celfiles(CELfiles)
-getClass("GeneFeatureSet")
-
-exprs(rawData)[1:4,1:3]
-filename <- sampleNames(rawData)
-# colData(rawData)$filename <- filename
-
-#filter features by genes
-geneset<-oligo::rma(rawData, target = "core")
-# BiocManager::install(geneset@annotation)
-geneset
-
-geneAcc=as.character(huex10sttranscriptclusterACCNUM[rownames(geneset)])
-geneNames=as.character(huex10sttranscriptclusterSYMBOL[rownames(geneset)])
-
-geneset<-annotateEset(geneset,huex10sttranscriptcluster.db) #remove probes that don't have a gene
-
-mat<-Biobase::exprs(geneset)
-colnames(mat)<-colnames(mat) %>% strsplit("-")%>% sapply("[[", 1)
-
-out<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/cog_log2_pdata.csv")
-rownames(out)<-out$sample %>% gsub(".CEL", "", .)
-colnames(mat)
-fdat<- geneset@featureData@data
-names(fdat)<-c("id", "entrez", "gene_short_name", "description")
-obj<-CreateSeuratObject(counts = mat %>%as.sparse(), meta.data = out)
-```
-
-# patient microarray data set2: tumor invasion
+# patient microarray dataset
 ```{r set up file paths}
 # -------------------------------------
 
@@ -172,6 +97,55 @@ obj<-CreateSeuratObject(counts = mat %>%as.sparse(), meta.data = out)
 # find relative directory on Server
 # -------------------------------------
 #https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE63157
+
+series_meta<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/GSE63157_meta.csv") %>% t() %>% as.data.frame()
+colnames(series_meta)<-series_meta[1,]
+series_meta<-series_meta[-1,]
+colnames(series_meta)<-gsub("!", "", colnames(series_meta))
+colnames(series_meta)<-gsub("Sample_", "", colnames(series_meta))
+series_meta %>% head()
+dim(series_meta)
+rownames(series_meta)<-series_meta$geo_accession
+
+names(series_meta)[10]<-"study"
+# fix COG meta
+cog_meta<-series_meta[series_meta$study %in% c("study: AEWS0031","study: INT-0154"),]
+
+#Euro meta
+
+euro_meta<-series_meta[!series_meta$study %in% c("study: AEWS0031","study: INT-0154"),] 
+colnames(euro_meta)<-make.unique(names(euro_meta))
+euro_meta<-euro_meta[,!names(euro_meta)%in%c("characteristics_ch1.7","characteristics_ch1.8","characteristics_ch1.9") ]
+
+euro_meta<-fix_meta(euro_meta)
+cog_meta<-fix_meta(cog_meta)
+
+names(euro_meta)[names(euro_meta) == "efs_0=no_event,_1=event"]<-"efs_event"
+names(euro_meta)[names(euro_meta) == "os_0=alive;_1=dead"]<-"survival_status"
+names(euro_meta)[names(euro_meta) == "efs-time"]<-"efs_time_days"
+names(euro_meta)[names(euro_meta) == "os-time"]<-"survival_time_days"
+
+names(euro_meta)[!names(euro_meta) %in% names(cog_meta)]
+
+merged <- full_join(cog_meta, euro_meta)
+rownames(merged)<-merged$geo_accession
+
+names(merged)
+
+merged$efs_event_0_1<-merged$efs_event
+merged$efs_event_0_1[merged$efs_event_0_1 %in% c("No event", "0")]<-0
+merged$efs_event_0_1[merged$efs_event_0_1 %in% c("Relapse", "SMN", "1")]<-1
+merged$efs_event_0_1<-as.numeric(merged$efs_event_0_1)
+
+merged$efs_time_days <- as.numeric(merged$efs_time_days)
+merged$survival_time_days <- as.numeric(merged$survival_time_days)
+
+merged$survival_status_0_1<-merged$survival_status
+merged$survival_status_0_1[merged$survival_status_0_1 %in% c("Dead", "1")]<-1
+merged$survival_status_0_1[merged$survival_status_0_1 %in% c("Alive", "0")]<-0
+merged$survival_status_0_1<-as.numeric(merged$survival_status_0_1)
+
+merged<-merged[,!names(merged) == "efs_time"]
 
 key<-"/fh/fast/furlan_s/user/owalt/ewings"
 flag<-"tumorinvasion_MA"
@@ -182,29 +156,24 @@ setwd(file.path(key, flag))
 DATA_DIR <- file.path( key,flag,  "CEL") # SPECIFY HERE
 RES_DIR  <- file.path(  key,flag, "res")      # SPECIFY HERE
 
-directory.wb<-read.xlsx(file.path(key,flag, "eset_batch_effect_corrected_46_samples_COG_new.xlsx"))
 
-meta<-read.xlsx(file.path(key,flag, "46 COG tumors_metadata.xlsx"))
+series_mtx<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/GSE63157_series_matrix.csv")
 
-mat<-directory.wb[,-(1:2)]
-rownames(mat)<-directory.wb$transcript_cluster_id
-colnames(mat)<-gsub(".CEL", "", colnames(mat))
+head(series_mtx)
+rownames(series_mtx)<-series_mtx$ID_REF
+series_mtx<-series_mtx[,-1]
 
-rownames(meta)<-meta$`SPECS.MAC#`
+obj<-CreateSeuratObject(counts = series_mtx, meta.data = merged)
+obj[["normRNA"]]<-CreateAssayObject(counts = series_mtx)
 
-obj<-CreateSeuratObject(counts = mat, meta.data = meta)
-obj[["normRNA"]]<-CreateAssayObject(mat)
-
-pattern <- paste(directory.wb$`SPECSMAC#`, collapse = "|")
-CELfiles <- list.files("GSE63157_RAW")[grep(pattern, list.files("GSE63157_RAW"))]
-
-directory.wb$FileName<-file.path(CELfiles)
-rownames(directory.wb)<-directory.wb$`SPECSMAC#`
+bulk_count_data<-obj@assays$normRNA@counts
 ```
 
+# map probe ids to gene_short_names and ensembl ids
 ```{r build microarray object}
 setwd("/fh/fast/furlan_s/user/owalt/ewings/tumorinvasion_MA/GSE63157_RAW")
-rawData <- read.celfiles(CELfiles)
+CELfiles<-list.files()
+rawData <- read.celfiles(CELfiles[CELfiles != "core"])
 getClass("GeneFeatureSet")
 
 exprs(rawData)[1:4,1:3]
@@ -213,12 +182,13 @@ filename <- sampleNames(rawData)
 #filter features by genes
 geneset<-oligo::rma(rawData, target = "core")
 # BiocManager::install(geneset@annotation)
-geneset
 
 geneAcc=as.character(huex10sttranscriptclusterACCNUM[rownames(geneset)])
 geneNames=as.character(huex10sttranscriptclusterSYMBOL[rownames(geneset)])
 
 geneset<-annotateEset(geneset,huex10sttranscriptcluster.db) #remove probes that don't have a gene
+
+Biobase::exprs(geneset) %>% head()
 
 mat<-Biobase::exprs(geneset)
 colnames(mat)<-colnames(mat) %>% strsplit("_")%>% sapply("[[", 2)%>% strsplit("\\.")%>% sapply("[[", 1)
@@ -226,13 +196,78 @@ colnames(mat)<-colnames(mat) %>% strsplit("_")%>% sapply("[[", 2)%>% strsplit("\
 fdat<- geneset@featureData@data
 names(fdat)<-c("id", "entrez", "gene_short_name", "description")
 
-obj<-CreateSeuratObject(counts = mat %>%as.sparse(), meta.data = meta)
-obj<-UpdateSeuratObject(obj)
+write.csv(fdat, "/fh/fast/furlan_s/user/owalt/ewings/EwingMA/probe_gene_short_name_mappings.csv")
 
-obj[["normRNA"]]<-CreateAssayObject(mat)
+library(org.Hs.eg.db)
+
+ensembl_ids <- mapIds(org.Hs.eg.db,
+  keys = fdat$gene_short_name,
+  column = "ENSEMBL",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+ensembl_ids[names(ensembl_ids) %in% fdat$gene_short_name] %>% length()
+fdat$gene_short_name %>% length()
+gene_short_name = fdat$gene_short_name[fdat$gene_short_name %in% names(ensembl_ids)]
+ensembl_ids<-ensembl_ids[order(match(names(ensembl_ids), fdat$gene_short_name))] 
+ensembl_ids<-ensembl_ids %>% unlist()
+
+ensembl_ids %>% length()
+gene_short_name <- gene_short_name[gene_short_name %in% names(ensembl_ids)]
+gene_short_name %>% length()
+
+gene_mapping <- data.frame(
+  gene_short_name = gene_short_name,
+  ensembl_gene_id = ensembl_ids
+)
+
+gtf <- rtracklayer::import('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/gencode.v33.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+
+bulk_count_data<-bulk_count_data[rownames(bulk_count_data) %in% fdat$id,]
+fdat_sub<-fdat[fdat$id %in% rownames(bulk_count_data),]
+
+dim(bulk_count_data)
+dim(fdat_sub)
+fdat_sub[fdat_sub$id == rownames(bulk_count_data)[37],]
+
+
+rownames(bulk_count_data)<-fdat_sub$gene_short_name[order(match(fdat_sub$id, rownames(bulk_count_data)))]
+bulk_count_data_filt<-bulk_count_data[!is.na(rownames(bulk_count_data)),]
+dim(bulk_count_data_filt)
+
+gene_mapping<-gene_mapping[gene_mapping$gene_short_name %in% rownames(bulk_count_data_filt),]
+gene_mapping<-gene_mapping[order(match(gene_mapping$gene_short_name, rownames(bulk_count_data_filt))),]
+
+rownames(bulk_count_data_filt)<-gene_mapping$ensembl_gene_id
+gene_mapping[gene_mapping$ensembl_gene_id == rownames(bulk_count_data_filt)[1],]
+
+
+gtf_df$gene_id<-str_split(gtf_df$gene_id, "\\.") %>% sapply("[[",1)
+gtf_df$gene_id %in% rownames(bulk_count_data_filt) %>% table()
+merge<-cbind(bulk_count_data_filt, gtf_df[match(rownames(bulk_count_data_filt), gtf_df$gene_id),])
+
+merge$size<-merge$end - merge$start
+bulk_count_data_filt<-cbind(data.frame(size = merge$size), bulk_count_data_filt)
+
+dim(bulk_count_data_filt)
+
+cn<-colnames(bulk_count_data_filt)
+rownames(bulk_count_data_filt)<-make.unique(rownames(bulk_count_data_filt)%>% strsplit("\\.")  %>% sapply("[[", 1))
+
+
+write.csv(bulk_count_data_filt,"/fh/fast/furlan_s/user/owalt/ewings/EwingMA/bulk_count_data.csv",  row.names = rownames(bulk_count_data_filt))
+
+
+bulk_meta_data = obj@meta.data
+write.csv(bulk_meta_data,"/fh/fast/furlan_s/user/owalt/ewings/EwingMA/bulk_meta_data.csv")
+
+
 
 # se<-SummarizedExperiment(assays = list(counts = mat), colData = meta, rowData = fdat )
 # 
-saveRDS(obj, "/fh/fast/furlan_s/user/owalt/ewings/tumorinvasion_MA/tumorinvasion_seurat.rds")
+DefaultAssay(obj)<-"normRNA"
+saveRDS(obj, "/fh/fast/furlan_s/user/owalt/ewings/EwingMA/microarray_seurat_20260112.rds")
 ```
 

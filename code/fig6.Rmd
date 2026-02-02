@@ -8,7 +8,7 @@ editor_options:
 
 ```{r, warning=FALSE, message=FALSE, warning=FALSE, echo=F}
 rm(list=ls())
-ROOT_DIR<-"/fh/fast/furlan_s/user/owaltner/sj"
+ROOT_DIR<-"/fh/fast/furlan_s/user/owalt/ewings"
 DATA_DIR <- file.path(ROOT_DIR, "data")      # SPECIFY HERE
 RES_DIR  <- file.path(ROOT_DIR,  "res")     # SPECIFY HERE
 RMD_DIR  <- file.path(ROOT_DIR,"rmd")     # SPECIFY HERE
@@ -62,27 +62,29 @@ suppressPackageStartupMessages({
   library(tidycmprsk)
   library(condsurv)
   library(SummarizedExperiment)
-  library(Seurat)
   library(pd.huex.1.0.st.v2)
+  library(msigdbr)
   library(huex10sttranscriptcluster.db)
   library(affycoretools)
   library(ggpubr)
-  library(ComplexHeatmap)
 })
 set.seed(1234)
 
-library(future)
-#version 11 cuda
-dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
 
-library(RcppArrayFire)
-library(viewmaster)
+# BiocManager::install("cli")
+# 
+# library(future)
+# #version 11 cuda
+# dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
+# 
+# library(RcppArrayFire)
+library(viewmastR)
 ```
 
 ```{r, load colors and object}
-tum<-readRDS(file.path(ROOT_DIR, "cds/tumor_cellbender_filtered.rds"))#all cells post qc
+tum<-readRDS(file.path("/fh/fast/furlan_s/user/owalt/ewings/patient_data/tumor_cellbender_filtered.rds"))#all cells post qc
 cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/092921_cite.rds")
-pdx<- readRDS( file.path(CDS_DIR, "pdx_samples.rds"))
+pdx<- readRDS( "/fh/fast/furlan_s/user/owalt/ewings/pdx/cds/pdx_samples.rds")
 
 tumor_cols<-c("#81c1a8", "#455d98", "#7253a3","#e07540","#e7a79c","#cf3732")
 tum$tumor<-factor(tum$tumor, levels = c("tumor.1", "tumor.4", "tumor.2","tumor.3","tumor.5A", "tumor.5B"))
@@ -137,8 +139,7 @@ dds<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/rds/bulkRNA_d
 
 # read/ prepare objects
 ```{r prepare cite object}
-mo<-readRDS("~/m2/m2.rds")
-cite<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/cite/210330_cds_filtering.RDS")
+mo<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/9cl_seurat.rds")
 ```
 
 ```{r prepare cite object}
@@ -181,6 +182,19 @@ library("Seurat")
 library("reticulate")
 use_python("~/.conda/envs/py3/bin/python3")
 use_condaenv("~/.conda/envs/py3")
+
+# reticulate::conda_install(
+#   envname = "py3",
+#   packages = "tensorflow",
+#   pip = TRUE
+# )
+# 
+# reticulate::conda_install(
+#   envname = "py3",
+#   packages = "scipy",
+#   pip = TRUE
+# )
+
 py_config()
 ```
 
@@ -227,15 +241,25 @@ adata.raw = adata # raw counts
 # modify These #
 ################
 
-os.chdir("/home/owaltner/dev/cellSignalAnalysis")
+#os.chdir("/home/owaltner/dev/cellSignalAnalysis")
 adata = sc.read_h5ad('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/scEWS.h5ad')
 single_cell_ref = adata
 single_cell_ref_column = "subgroup"
+
+# bulk RNA dataset
 bulk_count_data = "/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/bulk_counts_normalized.csv"
 bulk_meta_data = "/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/bulk_meta.csv"
-gene_weights = "/home/owaltner/dev/cellSignalAnalysis/geneWeights.tsv"
+
+
+# microarray test
+bulk_count_data = "/fh/fast/furlan_s/user/owalt/ewings/EwingMA/bulk_count_data.csv"
+bulk_meta_data = "/fh/fast/furlan_s/user/owalt/ewings/EwingMA/bulk_meta_data.csv"
+gene_weights = "/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/data/geneWeights.tsv"
 
 ds = range(0,126)
+
+#microarray
+ds = range(0,8)
 drop_zero_sig_genes=False
 init_log_exposure=-10
 insert_size=500
@@ -261,13 +285,19 @@ sc.pl.umap(adata, color = single_cell_ref_column)
 ##################
 # Load bulk data #
 ##################
+
 toc = pd.read_csv(bulk_count_data, index_col=0)
 tol=toc['size']
-toc = toc.drop(columns='size')
+toc = toc.drop(columns='size') 
 meta_bulk = pd.read_csv(bulk_meta_data, index_col=0)
 bulkGenes = toc.index
+
+
+# dont downsample with microarray
 toc = toc.iloc[:,ds]
 meta_bulk = meta_bulk.iloc[ds,:]
+
+
 n=toc.shape[1]
 tol = pd.concat([tol] * n, axis=1, ignore_index=True)
 toc.index.name="geneName"
@@ -289,7 +319,6 @@ scSigs.append(tmp)
 refGenes = list(set.intersection(*[set(x.index.values) for x in scSigs]))
 refGenes.sort()
 nGenes = [x.shape[0] for x in scSigs]
-#nGenes = len(scSigs.index)
 if len(refGenes) < max(nGenes):
   warnings.warn("Reference cellular signals have between %d and %d genes, with only %d in comciten.  All non-shared genes will be dropped."%(min(nGenes),max(nGenes),len(refGenes)))
 #Merge into one matrix 
@@ -596,6 +625,9 @@ adata_target.obs['sample']=adata_target.obs_names
 
 fit.to_csv('/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/res/patient_subgroup_fit.csv')
 
+# if micro array
+fit.to_csv('/fh/fast/furlan_s/user/owalt/ewings/EwingMA/patient_subgroup_fit.csv')
+
 ```
 
 
@@ -627,46 +659,151 @@ names(bioproject)<-colnames(fit_subgroup)
 ca<-columnAnnotation(BioProject = bioproject, col = list(BioProject = c(PRJNA253759="#B0C4DE", PRJNA261990="#4682B4")), border = F)
 
 Heatmap(fit_subgroup[c("k1", "k2", "k3", "intercept"),], col = viridis(100),  show_column_names  = F, show_row_names = T, cluster_rows = F, top_annotation = ca)
+
+
 ```
 
+
+# Fig 6 correlation plot of group 2 signature, fosl2, tgfb bulk RNA dataset
+```{r}
+sfit<-read.table("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/res/subgroup_primary_tumor_fit.mtx", header =T)
+
+
+sub_dds %>% colnames() %>% head()
+sfit %>% colnames() %>% head()
+
+
+sub_dds$group2_signature<-fit_subgroup["k2",]
+
+
+mat<-sub_dds@assays@data$counts
+sub_dds@rowRanges<-NULL
+sub_dds@rowRanges@elementMetadata$gene_short_name
+rownames(mat)<-sub_dds@rowRanges@elementMetadata$gene_short_name
+meta<-sub_dds@colData %>% data.frame()
+library(Matrix)
+mat<-mat[!duplicated(rownames(mat)),]
+
+colnames(mat)<-rownames(meta)
+
+seu<-CreateSeuratObject(counts = mat %>% as.matrix() %>% as.sparse(), meta.data = meta)
+
+
+norm_mat<-assays(sub_dds)$normalized_counts
+rownames(norm_mat)<-sub_dds@rowRanges@elementMetadata$gene_short_name
+colnames(norm_mat)<-rownames(meta)
+norm_mat<-norm_mat[!duplicated(rownames(norm_mat)),]
+
+seu@meta.data %>% names()
+seu[["normRNA"]]<-CreateAssayObject(norm_mat)
+DefaultAssay(seu)<-"normRNA"
+
+
+norm_mat<-assays(sub_dds)$normalized_counts
+rownames(norm_mat)<-sub_dds@rowRanges@elementMetadata$gene_short_name
+colnames(norm_mat)<-rownames(meta)
+norm_mat<-norm_mat[!duplicated(rownames(norm_mat)),]
+log_mat<-log10(norm_mat+1)
+
+
+seu[["logRNA"]]<-CreateAssayObject(log_mat)
+DefaultAssay(seu)<-"logRNA"
+
+
+
+rna_cols<-paletteContinuous(n=8)[c(1:3, 6:8)]
+
+#get gene ontology biological process collection
+msig<-msigdbr(subcategory = "GO:BP")
+#find term for extracellular matrix
+msig$gs_name[grep("REGULATION_OF_CELLULAR_RESPONSE_TO",msig$gs_name)] %>% unique()
+
+#get tgfb gene list
+tgfb<-msig[msig$gs_name == "GOBP_REGULATION_OF_CELLULAR_RESPONSE_TO_TRANSFORMING_GROWTH_FACTOR_BETA_STIMULUS",]$gene_symbol
+
+seu@assays$logRNA@data
+
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
+
+
+seu<-AddModuleScore(seu, features = list(tgfb), name = "tgfb")
+seu<-AddModuleScore(seu, features = fus_kmean, name = "k")
+
+fit_subgroup[,colnames(fit_subgroup) %in% colnames(seu)]
+
+seu$group_2<-fit_subgroup["k2",] %>% unlist()
+seu$group_1<-fit_subgroup["k1",] %>% unlist()
+seu$group_3<-fit_subgroup["k3",] %>% unlist()
+seu$intercept<-fit_subgroup["intercept",] %>% unlist()
+library(ggpubr)
+
+
+seu$FOSL2<-seu@assays$logRNA@data[which(rownames(seu@assays$logRNA@data)== "FOSL2"),]
+
+seu$FOSL2
+seu$tgfb1
+seu$k2
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/figs/k2_fos_tgfb_corr.pdf", width = 4, height = 4)
+ggplot(seu@meta.data, aes(x =k2, y = tgfb1, color = FOSL2))+geom_point()+ggtitle(label = "bulk RNA dataset")+
+  stat_cor(method = "spearman", label.x = min(seu@meta.data$k2), label.y = max(seu@meta.data$tgfb1))+
+  theme_bw()+
+  NoGrid()+
+  scale_color_gradientn(colors = rna_cols)
+dev.off() 
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/bulk_RNA_patient/figs/group2_fos_tgfb_corr.pdf", width = 4, height = 4)
+ggplot(seu@meta.data, aes(x =group_2, y = tgfb1, color = FOSL2))+geom_point()+ggtitle(label = "bulk RNA dataset")+
+  stat_cor(method = "spearman", label.x = min(seu@meta.data$group_2), label.y = max(seu@meta.data$tgfb1))+
+  theme_bw()+
+  NoGrid()+
+  scale_color_gradientn(colors = rna_cols)
+dev.off() 
+
+
+
+kmean_mat<-seu@meta.data[,c("k1", "k2", "k3" , "group_1", "group_2", "group_3", "intercept")] %>% t()
+
+kmean_mat_scale<-t(scale(t(kmean_mat)))
+
+ComplexHeatmap::Heatmap(kmean_mat, col = rna_cols, show_column_names = F) 
+
+ComplexHeatmap::Heatmap(kmean_mat_scale, col = rna_cols, show_column_names = F) 
+
+```
 
 
 # Fig 6E Patient Microarray data set
 ```{r helpful functions}
-gene_list<-kmean_probes[[2]]
-name = "k2"
+# gene_list<-list(kmean_probes[[2]])
+# name="k2"
+
+
 strat_curve<-function(obj, gene_list, name){
+  DefaultAssay(obj)<-"normRNA"
   obj<-AddModuleScore(obj, features = gene_list, name = name)
   quants<-quantile(obj[[paste0(name,"1")]] %>% unlist(), 0.85)
   obj$pos<-T
   obj$pos[obj[[paste0(name,"1")]] < quants]<-F
-  counts=obj$pos %>% table() %>% data.frame()
   
-  ntrue=counts[2,"Freq"]
-  nfalse=counts[1,"Freq"]
-  
-  cox<-coxph(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
+  df <- obj@meta.data
+  df$survival_status
+  # names(df)[grepl("EFS.time.", names(df))]<-"EFS.time.days"
+  # names(df)[grepl("censor=0,.eve", names(df))]<-"EFS..censor.0..event.1."
+  # 
+  cox<-coxph(Surv(efs_time_days,efs_event_0_1) ~pos, data = df) %>% summary()
   pval<-cox$waldtest["pvalue"]
 
-  survfit2(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
-    ggsurvfit() +
-    labs(
-      x = "Days",
-      y = "Event free survival probability"
-    )+ylim(c(0,1))+ggtitle(label = paste0(name, " high expression / pvalue = " , round(pval, 4)))+
-    geom_text(data = data.frame(
-      pos = factor(c(TRUE, FALSE)),
-      x = c(max(obj$EFS.time..days.), max(obj$EFS.time..days.)),
-      y = c(0.8, 0.7),
-      label = c(ntrue, nfalse)
-    ), 
-    aes(x = x, y = y, label = label, color = pos), 
-    hjust = 1) 
+ 
+  print(pval)
+  survfit2(
+    Surv(efs_time_days, efs_event_0_1) ~ pos,
+    data = df
+    ) %>%
+    ggsurvfit()
 }
 
-
-
-# gene<-"FOSL2"
+gene<-"FOSL2"
 strat_curve_gene<-function(obj, gene){
   probes<-fdat[which(fdat$gene_short_name %in% gene), ]$id
   if(length(probes) >1){
@@ -676,55 +813,123 @@ strat_curve_gene<-function(obj, gene){
     obj$pos[obj[[paste0(name,"1")]] < quant]<-F  
   }
   if(length(probes) == 1){
-    obj$gene<-obj@assays$RNA@counts[probes,]
-    quant<-quantile(obj$gene %>% unlist(), 0.5)
+    obj$gene<-obj@assays$normRNA@data[probes,]
+    quant<-quantile(obj$gene %>% unlist(), 0.85)
     obj$pos<-T
     obj$pos[obj$gene < quant]<-F  
   }
-  cox<-coxph(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
+  cox<-coxph(Surv(efs_time_days,efs_event_0_1) ~pos, data = obj@meta.data %>% data.frame()) %>% summary()
   pval<-cox$waldtest["pvalue"]
-  survfit2(Surv(EFS.time..days.,EFS..censor.0..event.1.) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
-  ggsurvfit() +
-  labs(
-    x = "Days",
-    y = "Event free survival probability"
-  )+ylim(c(0,1))+ggtitle(label = paste0(gene, " high expression / pvalue = " , round(pval, 4)))
+  print(value)
+  survfit2(Surv(efs_time_days,efs_event_0_1) ~ pos, data = obj@meta.data %>% data.frame()) %>% 
+  ggsurvfit()
 }
 ```
 
+
 ```{r}
-fus_kmean<-readRDS("/fh/fast/furlan_s/user/owaltner/m3/res/kd_kmean_genes.rds")
+obj<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/microarray_seurat_20260112.rds")
 
-kmean<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/3_subgroup_links.csv")
+fus_kmean<-readRDS("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown/res/kd_kmean_genes.rds")
 
-kmean<-kmean[!duplicated(kmean$gene),]
+fdat<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/probe_gene_short_name_mappings.csv")
 
-fus_kmean[[1]]<-kmean[kmean$kmean == 1,]$gene
-fus_kmean[[2]]<-kmean[kmean$kmean == 2,]$gene
-fus_kmean[[3]]<-kmean[kmean$kmean == 3,]$gene
+DefaultAssay(obj)<-"normRNA"
 
-
+obj@meta.data %>% names()
+# kmean<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/3_subgroup_links.csv")
+x<-fus_kmean[[2]]
 kmean_probes<-lapply(fus_kmean, function(x){
   probes<-fdat[fdat$gene_short_name %in% x,]$id  
   probes[probes %in% rownames(obj)]
 })
 
+obj<-AddModuleScore(obj, features = (kmean_probes), name = "k")
+```
+
+```{r}
+#get gene ontology biological process collection
+msig<-msigdbr(subcategory = "GO:BP")
+#find term for extracellular matrix
+msig$gs_name[grep("REGULATION_OF_CELLULAR_RESPONSE_TO",msig$gs_name)] %>% unique()
+
+#get tgfb gene list
+tgfb<-msig[msig$gs_name == "GOBP_REGULATION_OF_CELLULAR_RESPONSE_TO_TRANSFORMING_GROWTH_FACTOR_BETA_STIMULUS",]$gene_symbol
+
+tgfb_probes<-fdat[fdat$gene_short_name %in% tgfb,]$id  
+tgfb_probes<-tgfb_probes[tgfb_probes %in% rownames(obj)]
+
+
+fosl2_probes<-fdat[fdat$gene_short_name %in% "FOSL2",]$id  
+
+obj$FOSL2<-obj@assays$normRNA@data["2474977",]
+
+
+obj<-AddModuleScore(obj, features = list(tgfb_probes), name = "tgfb")
+obj@meta.data %>% names()
+
+md <- obj[[]] %>% as.data.frame()
+md$k2     <- as.numeric(md$k2)
+md$tgfb1  <- as.numeric(md$tgfb1)
+md$FOSL2  <- as.numeric(md$FOSL2)
+
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/figs/ma_k2_fos_tgfb_corr.pdf", width = 4, height = 4)
+
+ggplot(
+  md,
+  aes(x = k2, y = tgfb1, color = FOSL2)
+  ) +
+  geom_point() +
+  labs(
+    x = "module 2 gene set score",
+    y = "GO:BP TGFB Response expression"
+  ) +
+  ggtitle("Microarray dataset") +
+  stat_cor(
+    method = "pearson",
+    label.x = min(md$k2, na.rm = TRUE),
+    label.y = max(md$tgfb1, na.rm = TRUE)
+  ) +
+  theme_bw() +
+  NoGrid() +
+  scale_color_gradientn(colors = rna_cols)
+
+dev.off()
+```
+
+
+
+```{r}
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/figs/k1_survival.pdf", width = 3, height = 3)
+strat_curve(obj[,obj$study %in% c("study: AEWS0031","study: INT-0154")], gene_list= list(kmean_probes[[1]]),name =  "k1")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))+NoGrid()
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/figs/k2_survival.pdf", width = 3, height = 3)
+strat_curve(obj[,obj$study %in% c("study: AEWS0031","study: INT-0154")], gene_list= list(kmean_probes[[2]]),name =  "k2")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))+NoGrid()
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/figs/k3_survival.pdf", width = 3, height =3)
+strat_curve(obj[,obj$study %in% c("study: AEWS0031","study: INT-0154")], gene_list= list(kmean_probes[[3]]),name =  "k3")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))+NoGrid()
+dev.off()
+
+pdf("/fh/fast/furlan_s/user/owalt/ewings/EwingMA/figs/fosl2_survival.pdf", width = 3, height =3)
+strat_curve_gene(obj[,obj$study %in% c("study: AEWS0031","study: INT-0154")], gene="FOSL2")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))+NoGrid()
+dev.off()
+```
+
+## REVIEWERS COMMENTS/REVISIONS
+(12) Figure 6: Within Volchenboum/Lawlor's dataset, of the 46 clinically annotated primary tumors, 10 of the COG samples contained substantial stromal elements, while all the tumors in the European cohort were >70% viable tumors. Can the authors separate out the stromal-rich (n = 10) samples and analyze the 36 tumor-enriched samples to see if the survival curve is the same as what is shown in Figure 6G/H and S4E?
+```{r}
+
+obj$`Include.or.exclude.(path.report.of.tumor/stroma.content)` %>% table()
+
+obj$`%tumor>70%` %>% table()
 DefaultAssay(obj)<-"normRNA"
 
-pdf("../figs/k1_survival.pdf", width = 3, height = 3)
-strat_curve(obj, gene_list= list(kmean_probes[[1]]),name =  "k1")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
-dev.off()
+strat_curve(obj, gene_list= list(kmean_probes[[2]]),name =  "k2")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))+NoGrid()
 
-pdf("../figs/k2_survival.pdf", width = 3, height = 3)
-strat_curve(obj, gene_list= list(kmean_probes[[2]]),name =  "k2")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
-dev.off()
-
-pdf("../figs/k3_survival.pdf", width = 3, height =3)
-strat_curve(obj, gene_list= list(kmean_probes[[3]]),name =  "k3")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
-dev.off()
-
-pdf("../figs/fosl2_survival.pdf", width = 3, height =3)
-strat_curve(obj, gene_list= list(fosl2_probes[[1]]),name =  "fosl2_targets")+scale_color_manual(values =c("cornflowerblue", "#FF4500"))
-dev.off()
+strat_curve(obj[,obj$`%tumor>70%` == "Yes"], gene_list= list(kmean_probes[[2]]),name =  "k2")
 ```
 

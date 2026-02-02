@@ -22,6 +22,7 @@ suppressPackageStartupMessages({
   library(Seurat)
   library(future)
   library(GenomicRanges)
+  library(ggpubr)
   library(ComplexHeatmap)
   library(EnsDb.Hsapiens.v86)
   library(BSgenome.Hsapiens.UCSC.hg38)
@@ -32,6 +33,7 @@ suppressPackageStartupMessages({
   library(scCustomize)
   library(pbmcapply)
   library(msigdbr)
+  library(stringr)
   library(SeuratObject)
   library(tibble)
   library(ggrepel)
@@ -40,7 +42,6 @@ suppressPackageStartupMessages({
 
 set.seed(1234)
 
-setwd("~/m3")
 
 #version 11 cuda
 dyn.load('/app/software/ArrayFire/3.8.1/lib64/libaf.so.3')
@@ -51,14 +52,15 @@ library(viewmaster)
 
 #load objects
 ```{r}
+setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/knockdown")
 m3<-loadArchRProject()
-m3_seu<-readRDS("m3.rds")
+m3_seu<-readRDS("knockdown_seurat.rds")
+m3_seu$cell<-m3_seu$cell_line %>% str_split("_") %>% sapply("[[",1)
 
 
 setwd("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
 m1<- loadArchRProject("/fh/fast/furlan_s/user/owalt/ewings/multiome/all_parents")
 m1_seu<-readRDS("all_parents_seurat.rds")
-
 ```
 
 #load colors
@@ -275,8 +277,18 @@ plot_cells(m3_cds, color_cells_by = "cell_line", label_cell_groups = F, cell_siz
 
 #Fig 3E
 ```{r}
-m3_seu<-AddModuleScore(m3_seu, features = list(aynaud$Gene), name = "aynaud")
 aynaud<-read.delim("/fh/fast/furlan_s/user/owalt/ewings/gene_sets/ICEWS_genes.txt")
+m3_seu<-AddModuleScore(m3_seu, features = list(aynaud$Gene), name = "aynaud")
+
+
+df<-m3_seu@meta.data
+
+ggplot(df, aes(x = cell, y = aynaud1, fill = cond)) +
+  geom_violin(position = position_dodge(0.8)) +
+  stat_compare_means(
+    label = "p.signif"
+  )
+
 
 VlnPlot(m3_seu, features = "aynaud1", pt.size=0,  split.by = "cond", group.by="cell", split.plot=T, fill.by ="ident")+scale_fill_manual(values = c("shNS"="white","shFLI"="gray90"))+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)
 ```
@@ -284,22 +296,55 @@ VlnPlot(m3_seu, features = "aynaud1", pt.size=0,  split.by = "cond", group.by="c
 #Fig3F-H
 #load data
 ```{r}
-link_df<- read.csv("~/m2/res/3_subgroup_links.csv")
+link_df<- read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/3_subgroup_links.csv")
 link_df<-link_df[!duplicated(link_df$gene),]
 k1<- link_df[link_df$kmean == "1",]
 k2<- link_df[link_df$kmean == "2",]
 k3<- link_df[link_df$kmean == "3",]
-corr<-read.csv("~/m2/res/tf_motif_expression_correlation_exp_wide.csv")
+corr<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/multiome/9cl/res/tf_motif_expression_correlation_exp_wide.csv")
 ```
 
 ```{r KMEAN / IC_EWS GEX}
-DefaultAssay(m3_seu)<-"GeneExpressionMatrix"
+# getting around seurat v5 updates....
+mat<-read.csv("/fh/fast/furlan_s/user/owalt/ewings/geo_upload/processed_data/ewing_cell_lines_shFLI_knockdown/RNA_counts_processed.csv")
+rownames(mat)<-mat[,1]
+mat<-mat[,-1]
+mat[1:4,1:4]
+colnames(mat) %>%  head()
+
+colnames(mat) <- colnames(mat) |>
+  sub("\\.", "#", x = _) |>
+  sub("\\.1$", "-1", x = _) 
+
+
+m3_seu[["RNA"]]<-CreateAssayObject(mat %>% as.sparse())
+DefaultAssay(m3_seu)<-"RNA"
 
 m3_seu<-AddModuleScore(m3_seu, features = list(k2$gene), name = "K2")
 m3_seu<-AddModuleScore(m3_seu, features = list(k1$gene), name = "K1")
 m3_seu<-AddModuleScore(m3_seu, features = list(k3$gene), name = "K3")
 
 Idents(m3_seu)<-"cell_line"
+
+df<-m3_seu@meta.data
+
+ggplot(df, aes(x = cell, y = K11, fill = cond)) +
+  geom_violin(position = position_dodge(0.8)) +
+  stat_compare_means(
+    label = "p.signif"
+  )
+
+ggplot(df, aes(x = cell, y = K21, fill = cond)) +
+  geom_violin(position = position_dodge(0.8)) +
+  stat_compare_means(
+    label = "p.signif"
+  )
+
+ggplot(df, aes(x = cell, y = K31, fill = cond)) +
+  geom_violin(position = position_dodge(0.8)) +
+  stat_compare_means(
+    label = "p.signif"
+  )
 
 VlnPlot(m3_seu, features = "K11", pt.size=0,  split.by = "cond", group.by="cell", split.plot=T, fill.by ="ident")+scale_fill_manual(values = c("shNS"="white","shFLI"="gray90"))+geom_boxplot(width = 0.25, notch = FALSE, notchwidth = .4, outlier.shape = NA, coef=0)
 

@@ -116,7 +116,7 @@ m2_seu<-readRDS("m2.rds")
 ```{r get peak2gene links}
 m2<-addPeak2GeneLinks(m2, useMatrix = "GeneExpressionMatrix", reducedDims = "mo")
 #deafult parameters
-p <- plotPeak2GeneHeatmap(ArchRProj = m2, groupBy = "cell_line",k = 9,returnMatrices = F, palRNA = paletteContinuous(),palATAC = paletteContinuous("blueYellow"), palGroup = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))
+p <- plotPeak2GeneHeatmap(ArchRProj = m2, groupBy = "cell_line",k =3,returnMatrices = F, palRNA = paletteContinuous(),palATAC = paletteContinuous("blueYellow"), palGroup = c( "A673" = "#272E6A", "CHLA9"= "#208A42", "CHLA10" = "#89288F", "TC32" = "#00bca8", "PDX305"= "#F47D2B", "SKNMC"= "#8A9FD1", "A4573" = "#D51F26", "TC71" = "#e9c2db","RDES" = "#FEE500"))
 
 plotPDF(p, name = "link_heatmap_25.pdf", ArchRProj = m2, addDOC = FALSE, width = 8, height = 10)
 
