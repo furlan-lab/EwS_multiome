@@ -6,6 +6,7 @@
 <hr>
 
 This repository hosts code notebooks used to generate figures from the above titled manuscript.
+https://elifesciences.org/reviewed-preprints/109124
 
 **Processed, seurat objects are hosted [here](https://zenodo.org/records/12209095).**
 
